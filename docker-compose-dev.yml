@@ -1,0 +1,50 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: statistiloto-agent-ollama
+    ports: ["11434:11434"]
+    volumes: [ollama_models:/root/.ollama]
+    # CPU-only for dev; add deploy.resources reservations nvidia.com/gpu for GPU.
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: statistiloto-agent-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: statistiloto
+    ports: ["5433:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init-agent.sql:/docker-entrypoint-initdb.d/init-agent.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent:
+    build: .
+    container_name: statistiloto-agent-dev
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.1:8b
+      GEMINI_API_KEY: ""
+      LLM_PROVIDER: ollama
+      DB_URI: postgresql://postgres:postgres@db:5432/statistiloto
+      LOTTERY_GRPC_HOST: ""
+      LOTTERY_GRPC_PORT: "9090"
+      KEYCLOAK_JWKS_URL: ""
+      KEYCLOAK_ISSUER: ""
+      JWT_VERIFY: "false"
+      AGENT_LOG_LEVEL: DEBUG
+    volumes: ["./app:/app/app"]
+    ports: ["8000:8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+volumes:
+  ollama_models: {}
+  pg_data: {}
