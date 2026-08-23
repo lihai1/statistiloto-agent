@@ -38,9 +38,19 @@ CREATE TABLE IF NOT EXISTS agent.llm_config (
     model       TEXT NOT NULL,
     base_url    TEXT,
     api_key     TEXT,                       -- encrypt with pgcrypto in prod
+    request_timeout_seconds INT NOT NULL DEFAULT 300,  -- max seconds for a single LLM call
     updated_by  TEXT NOT NULL,              -- admin user_sub
     updated_at  DOUBLE PRECISION NOT NULL
 );
+-- Add column to existing tables (idempotent migration for upgrades)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='agent' AND table_name='llm_config')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='agent' AND table_name='llm_config' AND column_name='request_timeout_seconds')
+    THEN
+        ALTER TABLE agent.llm_config ADD COLUMN request_timeout_seconds INT NOT NULL DEFAULT 300;
+    END IF;
+END $$;
 
 -- pgvector embeddings — corpus-scoped, per-tenant for user_data.
 CREATE TABLE IF NOT EXISTS agent.embeddings (

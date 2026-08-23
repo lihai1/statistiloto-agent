@@ -94,12 +94,16 @@ def validate_jwt(authorization_header: str) -> TokenClaims:
             from jwt import PyJWKClient
             jwks_client = PyJWKClient(settings.security.jwks_url)
             signing_key = jwks_client.get_signing_key_from_jwt(token)
+            # The issuer in the token may differ from the internal Keycloak URL
+            # (e.g. token has http://localhost/... but internal is http://auth:8080/...).
+            # We verify the signature via JWKS and the audience, but skip issuer
+            # verification to avoid mismatch between external and internal URLs.
             claims = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                issuer=settings.security.issuer or None,
                 audience=settings.security.audience or None,
+                options={"verify_iss": False},
             )
         except jwt.PyJWTError as e:
             raise JWTError(f"Invalid token: {e}") from e

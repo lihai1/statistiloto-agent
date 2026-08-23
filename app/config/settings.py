@@ -33,6 +33,7 @@ class LLMConfig:
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     config_poll_seconds: int = 10
     mock: bool = False
+    request_timeout_seconds: int = 300
 
 
 @dataclass
@@ -120,6 +121,8 @@ def _env_override(data: dict) -> dict:
         data.setdefault("llm", {}).setdefault("gemini", {})["model"] = v
     if v := os.environ.get("LLM_MOCK"):
         data.setdefault("llm", {})["mock"] = v.lower() in ("1", "true", "yes")
+    if v := os.environ.get("LLM_REQUEST_TIMEOUT_SECONDS"):
+        data.setdefault("llm", {})["request_timeout_seconds"] = int(v)
     # DB
     if v := os.environ.get("DB_URI"):
         data.setdefault("database", {})["uri"] = v
@@ -134,10 +137,12 @@ def _env_override(data: dict) -> dict:
     # Security
     if v := os.environ.get("JWT_VERIFY"):
         data.setdefault("security", {})["jwt_verify"] = v.lower() in ("1", "true", "yes")
-    if v := os.environ.get("KEYCLOAK_JWKS_URL"):
+    if v := os.environ.get("JWKS_URL"):
         data.setdefault("security", {})["jwks_url"] = v
-    if v := os.environ.get("KEYCLOAK_ISSUER"):
+    if v := os.environ.get("ISSUER"):
         data.setdefault("security", {})["issuer"] = v
+    if v := os.environ.get("AUDIENCE"):
+        data.setdefault("security", {})["audience"] = v
     # Logging
     if v := os.environ.get("AGENT_LOG_LEVEL"):
         data.setdefault("logging", {})["level"] = v
@@ -158,6 +163,7 @@ def _build_settings(data: dict) -> Settings:
         ),
         config_poll_seconds=llm_data.get("config_poll_seconds", 10),
         mock=llm_data.get("mock", False),
+        request_timeout_seconds=llm_data.get("request_timeout_seconds", 300),
     )
 
     tiers_data = data.get("tiers", {})

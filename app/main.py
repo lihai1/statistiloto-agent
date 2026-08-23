@@ -46,6 +46,7 @@ class LLMConfigRequest(BaseModel):
     model: str
     base_url: str | None = None
     api_key: str | None = None
+    request_timeout_seconds: int | None = None
 
 
 # ── Graph singleton (built lazily) ───────────────────────────
@@ -54,15 +55,27 @@ _graph = None
 
 
 def get_graph():
-    """Get or build the supervisor graph with PostgresSaver checkpointer."""
-    global _graph
-    if _graph is not None:
-        return _graph
+    """Get or build the supervisor graph with PostgresSaver checkpointer.
 
-    from app.graphs.supervisor import build_supervisor_graph
+    If the checkpointer's connection was closed and recreated, the graph
+    is rebuilt with the new checkpointer instance.
+    """
+    global _graph
     from app.checkpointer import get_checkpointer
 
+    # get_checkpointer() may recreate the checkpointer if the connection
+    # was closed. We need to rebuild the graph in that case.
     checkpointer = get_checkpointer()
+    if _graph is not None:
+        # Check if the checkpointer was recreated (different instance)
+        current_cp = getattr(_graph, "checkpointer", None)
+        if current_cp is not checkpointer:
+            log.info("Checkpointer changed — rebuilding supervisor graph")
+            _graph = None
+        else:
+            return _graph
+
+    from app.graphs.supervisor import build_supervisor_graph
     _graph = build_supervisor_graph(checkpointer=checkpointer)
     log.info("Supervisor graph compiled with PostgresSaver checkpointer")
     return _graph
@@ -118,7 +131,10 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
     try:
         claims = validate_jwt(authorization)
     except JWTError as e:
+        log.error("[chat] JWT validation failed: %s", e)
         raise HTTPException(status_code=401, detail=str(e))
+
+    log.info("[chat] START user=%s tier=%s session=%s intent=%s", claims.sub, claims.tier, req.session_id, req.intent)
 
     graph = get_graph()
     thread_id = f"{claims.sub}:{req.session_id}"
@@ -129,6 +145,18 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
         "configurable": {"thread_id": thread_id},
         "recursion_limit": tier_cfg.recursion_limit,
     }
+
+    # Read conversation history from the previous checkpoint (if any).
+    # The checkpointer persists state per thread_id across requests, so
+    # the agent can remember prior turns within the same session.
+    try:
+        prev_state = graph.get_state(config)
+        history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
+    except Exception:
+        history = []
+
+    log.info("[chat] History loaded user=%s session=%s history_len=%d", claims.sub, req.session_id, len(history))
+
     state = {
         "user_sub": claims.sub,
         "tier": claims.tier,
@@ -136,7 +164,7 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
         "message": req.message,
         "intent": req.intent,
         "jwt_token": claims.raw_token,
-        "history": [],
+        "history": history,
     }
 
     import asyncio
@@ -147,15 +175,17 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
     try:
         result = await asyncio.to_thread(_run_graph)
     except Exception as e:
-        log.error("Graph invoke error: %s", e, exc_info=True)
+        log.error("[chat] Graph invoke ERROR user=%s session=%s msg=%s", claims.sub, req.session_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
     # Check if the graph paused for HITL (interrupt).
     # LangGraph stores interrupt info in the state under __interrupt__.
     if isinstance(result, dict) and "__interrupt__" in result:
+        log.info("[chat] PAUSED for HITL user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
         return {"paused": True, "thread_id": thread_id}
 
     response = result.get("response") if isinstance(result, dict) else None
+    log.info("[chat] SUCCESS user=%s session=%s response_len=%d", claims.sub, req.session_id, len(response) if response else 0)
     return {"response": response, "thread_id": thread_id}
 
 
@@ -165,7 +195,10 @@ async def approve(req: ApproveRequest, authorization: str = Header(...)):
     try:
         claims = validate_jwt(authorization)
     except JWTError as e:
+        log.error("[approve] JWT validation failed: %s", e)
         raise HTTPException(status_code=401, detail=str(e))
+
+    log.info("[approve] START user=%s session=%s approved=%s", claims.sub, req.session_id, req.approved)
 
     graph = get_graph()
     thread_id = f"{claims.sub}:{req.session_id}"
@@ -186,10 +219,11 @@ async def approve(req: ApproveRequest, authorization: str = Header(...)):
     try:
         result = await asyncio.to_thread(_resume_graph)
     except Exception as e:
-        log.error("Approve error: %s", e, exc_info=True)
+        log.error("[approve] Resume ERROR user=%s session=%s msg=%s", claims.sub, req.session_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
     response = result.get("response") if isinstance(result, dict) else None
+    log.info("[approve] SUCCESS user=%s session=%s approved=%s response_len=%d", claims.sub, req.session_id, req.approved, len(response) if response else 0)
     return {"response": response}
 
 
@@ -202,7 +236,13 @@ async def get_llm_config(authorization: str = Header(...)):
         raise HTTPException(status_code=401, detail=str(e))
 
     cfg = get_llm_store().get_config()
-    return {"provider": cfg.provider, "model": cfg.model}
+    return {
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "base_url": cfg.base_url,
+        "api_key": cfg.api_key,
+        "request_timeout_seconds": cfg.request_timeout_seconds,
+    }
 
 
 @app.put("/llm-config")
@@ -216,12 +256,13 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
 
     from app.rag.store import get_pool
     import time
+    timeout = req.request_timeout_seconds or 300
     pool = get_pool()
     with pool.connection() as conn:
         conn.execute(
-            """INSERT INTO agent.llm_config (provider, model, base_url, api_key, updated_by, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (req.provider, req.model, req.base_url, req.api_key, claims.sub, time.time()),
+            """INSERT INTO agent.llm_config (provider, model, base_url, api_key, request_timeout_seconds, updated_by, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (req.provider, req.model, req.base_url, req.api_key, timeout, claims.sub, time.time()),
         )
 
     # Force immediate refresh instead of waiting for the poller.
@@ -231,5 +272,34 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
         "status": "accepted",
         "provider": req.provider,
         "model": req.model,
+        "request_timeout_seconds": timeout,
         "note": "Hot-reloaded — no restart needed",
     }
+
+
+@app.get("/token-usage")
+async def get_token_usage(authorization: str = Header(...)):
+    """Read token usage stats (admin only). Returns aggregated rows from the DB."""
+    try:
+        claims = validate_jwt(authorization)
+        require_admin(claims)
+    except JWTError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    from app.tools.admin_ops import read_token_usage
+    rows = read_token_usage(claims)
+    return {"rows": rows}
+
+
+@app.get("/audit-log")
+async def get_audit_log(authorization: str = Header(...), limit: int = 50):
+    """Read audit log entries (admin only). Returns recent entries from the DB."""
+    try:
+        claims = validate_jwt(authorization)
+        require_admin(claims)
+    except JWTError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    from app.tools.admin_ops import query_audit_log
+    rows = query_audit_log(claims, limit=limit)
+    return {"rows": rows}

@@ -31,6 +31,7 @@ class LLMConfig:
     model: str
     base_url: str = ""
     api_key: str = ""
+    request_timeout_seconds: int = 300
 
 
 class LLMConfigStore:
@@ -65,19 +66,22 @@ class LLMConfigStore:
     def _boot_default(self) -> LLMConfig:
         """Fallback from env/YAML when no DB row exists."""
         s = get_settings()
+        timeout = s.llm.request_timeout_seconds
         if s.llm.mock:
-            return LLMConfig(provider="mock", model="fake-list")
+            return LLMConfig(provider="mock", model="fake-list", request_timeout_seconds=timeout)
         provider = s.llm.provider
         if provider == "ollama":
             return LLMConfig(
                 provider="ollama",
                 model=s.llm.ollama.model,
                 base_url=s.llm.ollama.base_url,
+                request_timeout_seconds=timeout,
             )
         return LLMConfig(
             provider="gemini",
             model=s.llm.gemini.model,
             api_key=s.llm.gemini.api_key,
+            request_timeout_seconds=timeout,
         )
 
     def _read_db(self) -> Optional[LLMConfig]:
@@ -87,23 +91,41 @@ class LLMConfigStore:
             if pool is None:
                 return None
             with pool.connection() as conn:
-                row = conn.execute(
-                    "SELECT provider, model, base_url, api_key "
-                    "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
-                ).fetchone()
-            if row:
-                return LLMConfig(
-                    provider=row[0],
-                    model=row[1],
-                    base_url=row[2] or "",
-                    api_key=row[3] or "",
-                )
+                # Try with request_timeout_seconds column; fall back without it
+                try:
+                    row = conn.execute(
+                        "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                        "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        return LLMConfig(
+                            provider=row[0],
+                            model=row[1],
+                            base_url=row[2] or "",
+                            api_key=row[3] or "",
+                            request_timeout_seconds=row[4] or 300,
+                        )
+                except Exception:
+                    # Column doesn't exist yet (pre-migration) — fall back
+                    row = conn.execute(
+                        "SELECT provider, model, base_url, api_key "
+                        "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        return LLMConfig(
+                            provider=row[0],
+                            model=row[1],
+                            base_url=row[2] or "",
+                            api_key=row[3] or "",
+                        )
         except Exception as e:
             log.debug("Failed to read llm_config from DB: %s", e)
         return None
 
     def _build_llm(self, cfg: LLMConfig):
         """Build a chat model instance from config."""
+        timeout = cfg.request_timeout_seconds or 300
+
         if cfg.provider == "mock":
             from langchain_core.language_models.fake_chat_models import FakeListChatModel
             responses = self._mock_responses or ["Mock LLM response"]
@@ -114,6 +136,7 @@ class LLMConfigStore:
             return ChatOllama(
                 model=cfg.model,
                 base_url=cfg.base_url or "http://ollama:11434",
+                timeout=timeout,
             )
 
         if cfg.provider == "gemini":
@@ -121,6 +144,7 @@ class LLMConfigStore:
             return ChatGoogleGenerativeAI(
                 model=cfg.model,
                 google_api_key=cfg.api_key,
+                timeout=timeout,
             )
 
         raise ValueError(f"Unknown LLM provider: {cfg.provider}")
@@ -133,7 +157,7 @@ class LLMConfigStore:
         except Exception as e:
             log.warning("Failed to build LLM (provider=%s model=%s): %s — falling back to mock",
                         cfg.provider, cfg.model, e)
-            cfg = LLMConfig(provider="mock", model="fallback")
+            cfg = LLMConfig(provider="mock", model="fallback", request_timeout_seconds=cfg.request_timeout_seconds)
             llm = self._build_llm(cfg)
 
         with self._lock:

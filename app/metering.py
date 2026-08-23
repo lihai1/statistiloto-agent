@@ -29,21 +29,41 @@ def _cost_usd(provider: str, model: str, prompt_tokens: int, completion_tokens: 
 
 
 def meter_llm(fn):
-    """Decorator: wrap an LLM-calling node function to log token usage."""
+    """Decorator: wrap an LLM-calling node function to log token usage.
+
+    The wrapped node function should include '_usage' (LangChain UsageMetadata
+    dict with input_tokens/output_tokens) and optionally '_response_metadata'
+    (raw provider metadata, e.g. Ollama's prompt_eval_count/eval_count) in
+    its return dict so the decorator can extract token counts.
+    """
     @functools.wraps(fn)
     def wrapper(state, *a, **kw):
         result = fn(state, *a, **kw)
 
-        # Extract token usage from the LLM response if available.
+        # Extract token usage from the node's return dict.
+        # Node functions return a dict (LangGraph state update), not the
+        # raw AIMessage, so we look for _usage / _response_metadata keys
+        # that the node function populates from the LLM response.
         prompt_tokens = 0
         completion_tokens = 0
-        if hasattr(result, "usage_metadata") and result.usage_metadata:
+
+        if isinstance(result, dict):
+            # Primary: LangChain normalized usage_metadata
+            um = result.get("_usage")
+            if um:
+                prompt_tokens = um.get("input_tokens", 0)
+                completion_tokens = um.get("output_tokens", 0)
+            else:
+                # Fallback: raw provider response_metadata
+                # Ollama: prompt_eval_count (input), eval_count (output)
+                rm = result.get("_response_metadata")
+                if rm:
+                    prompt_tokens = rm.get("prompt_eval_count", 0) or rm.get("input_tokens", 0)
+                    completion_tokens = rm.get("eval_count", 0) or rm.get("output_tokens", 0)
+        elif hasattr(result, "usage_metadata") and result.usage_metadata:
+            # Direct AIMessage (not currently used, but kept for safety)
             prompt_tokens = result.usage_metadata.get("input_tokens", 0)
             completion_tokens = result.usage_metadata.get("output_tokens", 0)
-        elif isinstance(result, dict) and "usage_metadata" in result:
-            um = result["usage_metadata"]
-            prompt_tokens = um.get("input_tokens", 0)
-            completion_tokens = um.get("output_tokens", 0)
 
         # Get provider/model from the global config store.
         cfg = get_llm_store().get_config()
@@ -67,6 +87,11 @@ def meter_llm(fn):
                 )
         except Exception as e:
             log.warning("Failed to log token usage: %s", e)
+
+        # Strip the temporary metadata keys so they don't pollute LangGraph state.
+        if isinstance(result, dict):
+            result.pop("_usage", None)
+            result.pop("_response_metadata", None)
 
         return result
 

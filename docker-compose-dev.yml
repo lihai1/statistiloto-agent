@@ -4,6 +4,10 @@ services:
     container_name: statistiloto-agent-ollama
     ports: ["11434:11434"]
     volumes: [ollama_models:/root/.ollama]
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"        # serial inference: one request at a time
+      OLLAMA_MAX_LOADED_MODELS: "1"   # only one model resident in memory
+      OLLAMA_MAX_QUEUE: "64"          # bound the backlog before rejecting
     # CPU-only for dev; add deploy.resources reservations nvidia.com/gpu for GPU.
 
   db:

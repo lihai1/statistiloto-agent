@@ -45,18 +45,22 @@ def classify_intent(state: SupervisorState) -> str:
     """Route by tier + intent. Tier gating happens HERE — the single choke point."""
     tier = state.get("tier", "free")
     intent = state.get("intent")
+    user_sub = state.get("user_sub", "unknown")
+    session_id = state.get("session_id", "")
 
     # Admin-only intents are unreachable for non-admin tiers.
     if intent == "admin_ops" and tier != "admin":
-        log.info("Downgrading admin_ops intent for tier=%s → nl_assistant", tier)
+        log.info("[supervisor.classify] DOWNGRADE admin_ops→nl_assistant user=%s tier=%s session=%s", user_sub, tier, session_id)
         return "nl_assistant"
 
     # Paid-only intents are unreachable for free tier.
     if intent == "analyst" and tier == "free":
-        log.info("Downgrading analyst intent for free tier → nl_assistant")
+        log.info("[supervisor.classify] DOWNGRADE analyst→nl_assistant user=%s tier=%s session=%s", user_sub, tier, session_id)
         return "nl_assistant"
 
-    return intent or "nl_assistant"
+    route = intent or "nl_assistant"
+    log.info("[supervisor.classify] ROUTE user=%s tier=%s session=%s intent=%s → %s", user_sub, tier, session_id, intent, route)
+    return route
 
 
 def build_supervisor_graph(checkpointer=None):

@@ -12,6 +12,7 @@ llm:
     model: "gemini-2.0-flash"
   config_poll_seconds: 10       # how often config_store polls DB for runtime changes
   mock: false                   # set LLM_MOCK=true to use FakeListChatModel for tests
+  request_timeout_seconds: 300  # max seconds for a single LLM inference call (small local models can be slow)
 
 # Tiers differ ONLY in capability caps — NOT in model. All tiers use the same LLM.
 # Admin is the owner/developer super-user, NOT a paid tier.
