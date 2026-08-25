@@ -12,11 +12,10 @@ from typing import Optional
 from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 
-from app.config.settings import get_tier_config
 from app.llm.router import get_llm
 from app.metering import meter_llm
 from app.prompts import SYSTEM_PROMPT_NL
-from app.rag.retriever import retrieve
+from app.graphs.common import format_history, format_ui_context, append_history, make_retrieve_node
 
 log = logging.getLogger(__name__)
 
@@ -32,25 +31,7 @@ class NLAssistantState(TypedDict):
     response: Optional[str]
 
 
-def retrieve_docs(state: NLAssistantState) -> dict:
-    """Retrieve relevant docs (role-scoped corpora)."""
-    user_sub = state["user_sub"]
-    tier = state["tier"]
-    session_id = state["session_id"]
-    log.info("[nl_assistant.retrieve] START user=%s tier=%s session=%s", user_sub, tier, session_id)
-    try:
-        cfg = get_tier_config(tier)
-        chunks = retrieve(
-            query=state["message"],
-            corpora=cfg.rag_corpora,
-            user_sub=user_sub,
-            tier=tier,
-        )
-        log.info("[nl_assistant.retrieve] SUCCESS user=%s session=%s chunks=%d", user_sub, session_id, len(chunks))
-        return {"chunks": chunks}
-    except Exception as e:
-        log.error("[nl_assistant.retrieve] ERROR user=%s session=%s msg=%s", user_sub, session_id, e, exc_info=True)
-        raise
+retrieve_docs = make_retrieve_node("nl_assistant")
 
 
 @meter_llm
@@ -63,8 +44,8 @@ def generate_response(state: NLAssistantState) -> dict:
     try:
         llm = get_llm()
         ctx = "\n".join(c["text"] for c in state.get("chunks", []))
-        hist = _format_history(state.get("history", []))
-        ui_context = _format_ui_context(state.get("context"))
+        hist = format_history(state.get("history", []))
+        ui_context = format_ui_context(state.get("context"))
         prompt = (
             f"{SYSTEM_PROMPT_NL}\n\n"
             f"Context:\n{ctx}\n\n"
@@ -76,13 +57,7 @@ def generate_response(state: NLAssistantState) -> dict:
         )
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
-        # Append the current exchange to history so the checkpointer persists it.
-        updated_history = list(state.get("history", []))
-        updated_history.append({"role": "user", "content": state["message"]})
-        updated_history.append({"role": "assistant", "content": content})
-        # Cap at 20 messages (10 exchanges) to avoid unbounded growth.
-        if len(updated_history) > 20:
-            updated_history = updated_history[-20:]
+        updated_history = append_history(state, content)
         log.info("[nl_assistant.generate] SUCCESS user=%s session=%s response_len=%d", user_sub, session_id, len(content))
         return {
             "response": content,
@@ -104,28 +79,3 @@ def build_nl_assistant_graph():
     g.add_edge("retrieve", "generate")
     g.add_edge("generate", END)
     return g.compile()
-
-
-def _format_history(history: list) -> str:
-    """Format conversation history for inclusion in the LLM prompt."""
-    if not history:
-        return ""
-    lines = []
-    for msg in history:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        lines.append(f"{role}: {content}")
-    return "Previous conversation:\n" + "\n".join(lines) + "\n\n"
-
-
-def _format_ui_context(context: dict | None) -> str:
-    """Format structured UI context for the LLM prompt.
-
-    The UI sends context like:
-      {"page": "statistics", "groupSize": 2, "ordering": "hot", "archiveWindow": {"lastDraws": 100}}
-      {"page": "analyze", "numbers": [7,11,17,24,31,36]}
-    """
-    if not context:
-        return ""
-    import json
-    return f"User's current page context:\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"

@@ -15,17 +15,16 @@ import logging
 from typing import Optional
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import interrupt, Command
 from typing_extensions import TypedDict
 
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
 from app.metering import meter_llm
 from app.prompts import SYSTEM_PROMPT_WITH_TOOLS
-from app.rag.retriever import retrieve
 from app.security import TokenClaims
 from app.tools import admin_ops, online_search, code_editor
-from app.tools.registry import is_write_tool
+from app.graphs.common import format_history, append_history, make_retrieve_node, make_hitl_gate
+from app.graphs.tool_parser import parse_tool_call
 
 log = logging.getLogger(__name__)
 
@@ -61,28 +60,7 @@ def _extract_quoted_content(text: str) -> str | None:
     return None
 
 
-def retrieve_docs(state: AdminOpsState) -> dict:
-    """Retrieve from admin corpora (docs + history + user_data + ops_logs).
-
-    Admin sees ALL users' user_data — the user_sub filter is bypassed
-    for admin in the retriever.
-    """
-    user_sub = state["user_sub"]
-    session_id = state["session_id"]
-    log.info("[admin_ops.retrieve] START user=%s session=%s", user_sub, session_id)
-    try:
-        cfg = get_tier_config(state["tier"])
-        chunks = retrieve(
-            query=state["message"],
-            corpora=cfg.rag_corpora,
-            user_sub=user_sub,
-            tier=state["tier"],
-        )
-        log.info("[admin_ops.retrieve] SUCCESS user=%s session=%s chunks=%d", user_sub, session_id, len(chunks))
-        return {"chunks": chunks}
-    except Exception as e:
-        log.error("[admin_ops.retrieve] ERROR user=%s session=%s msg=%s", user_sub, session_id, e, exc_info=True)
-        raise
+retrieve_docs = make_retrieve_node("admin_ops")
 
 
 @meter_llm
@@ -101,7 +79,7 @@ def plan_action(state: AdminOpsState) -> dict:
         ctx = "\n".join(c["text"] for c in state.get("chunks", []))
         cfg = get_tier_config(state["tier"])
         tools_str = ", ".join(cfg.allowed_tools)
-        hist = _format_history(state.get("history", []))
+        hist = format_history(state.get("history", []))
         prompt = (
             f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
             f"You are the owner admin. Map the request to one of these tools: {tools_str}.\n"
@@ -135,25 +113,7 @@ def plan_action(state: AdminOpsState) -> dict:
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
 
-        # Parse tool call from response.
-        # Format: "TOOL: <tool_name> ARGS: <json_args>" (case-insensitive, optional space before ARGS).
-        planned_tool = None
-        tool_args = {}
-        import re, json
-        for line in content.split("\n"):
-            stripped = line.strip()
-            if stripped.upper().startswith("TOOL:"):
-                rest = stripped[5:].strip()  # everything after "TOOL:"
-                # Split at the first case-insensitive "ARGS:" with optional surrounding whitespace.
-                parts = re.split(r"(?i)\s*ARGS:\s*", rest, maxsplit=1)
-                planned_tool = parts[0].strip()
-                args_str = parts[1].strip() if len(parts) > 1 else ""
-                if args_str:
-                    try:
-                        tool_args = json.loads(args_str)
-                    except (json.JSONDecodeError, ValueError):
-                        tool_args = {}
-                break
+        planned_tool, tool_args = parse_tool_call(content)
 
         # Small-model guard: for well-known admin phrases, force the right tool
         # even if the LLM picked a different one (or none).
@@ -211,49 +171,7 @@ def plan_action(state: AdminOpsState) -> dict:
         raise
 
 
-def maybe_hitl(state: AdminOpsState) -> Command:
-    """HITL gate: interrupt before executing ANY write tool.
-
-    Write tools (trigger_scraper, save_numbers) require human approval.
-    Read-only tools (query_audit_log, read_token_usage) proceed directly.
-    """
-    planned_tool = state.get("planned_tool")
-    user_sub = state["user_sub"]
-    session_id = state["session_id"]
-
-    if planned_tool and planned_tool != "none" and is_write_tool(planned_tool):
-        log.info("[admin_ops.hitl] PAUSE user=%s session=%s tool=%s — awaiting approval", user_sub, session_id, planned_tool)
-        decision = interrupt({
-            "planned_tool": planned_tool,
-            "tool_args": state.get("tool_args", {}),
-            "prompt": f"Agent wants to call write tool '{planned_tool}'. "
-                      f"This will modify data. Approve?",
-        })
-
-        if isinstance(decision, dict) and decision.get("approved"):
-            log.info("[admin_ops.hitl] APPROVED user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
-            edited = decision.get("edited")
-            if edited:
-                import json
-                try:
-                    new_args = json.loads(edited)
-                    return Command(update={"tool_args": new_args}, goto="execute")
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            return Command(update={}, goto="execute")
-        else:
-            log.info("[admin_ops.hitl] REJECTED user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
-            return Command(
-                update={"response": f"Action '{planned_tool}' rejected by admin reviewer."},
-                goto=END,
-            )
-
-    # Read tool or no tool — proceed to execute (execute handles "none").
-    if planned_tool and planned_tool != "none":
-        log.info("[admin_ops.hitl] READ tool proceeds user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
-    else:
-        log.info("[admin_ops.hitl] No tool, executing user=%s session=%s", user_sub, session_id)
-    return Command(update={}, goto="execute")
+maybe_hitl = make_hitl_gate("admin_ops", execute_node="execute")
 
 
 def execute(state: AdminOpsState) -> dict:
@@ -311,13 +229,7 @@ def execute(state: AdminOpsState) -> dict:
         import json
         response_str = json.dumps(result, default=str)
 
-        # Append the current exchange to history.
-        updated_history = list(state.get("history", []))
-        updated_history.append({"role": "user", "content": state["message"]})
-        updated_history.append({"role": "assistant", "content": response_str})
-        if len(updated_history) > 20:
-            updated_history = updated_history[-20:]
-
+        updated_history = append_history(state, response_str)
         log.info("[admin_ops.execute] SUCCESS user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
         return {"tool_result": result, "response": response_str, "history": updated_history}
     except Exception as e:
@@ -338,15 +250,3 @@ def build_admin_ops_graph():
     g.add_edge("plan", "hitl_gate")
     g.add_edge("execute", END)
     return g.compile()
-
-
-def _format_history(history: list) -> str:
-    """Format conversation history for inclusion in the LLM prompt."""
-    if not history:
-        return ""
-    lines = []
-    for msg in history:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        lines.append(f"{role}: {content}")
-    return "Previous conversation:\n" + "\n".join(lines) + "\n\n"

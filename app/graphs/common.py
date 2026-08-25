@@ -1,0 +1,159 @@
+"""Shared helpers for LangGraph worker subgraphs.
+
+Centralizes patterns duplicated across nl_assistant, analyst, and admin_ops:
+  - conversation history formatting
+  - UI context formatting
+  - document retrieval node factory
+  - history append + truncation
+  - HITL approval gate factory
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Callable, Optional
+
+from langgraph.types import interrupt, Command
+
+from app.config.settings import get_tier_config
+from app.rag.retriever import retrieve
+from app.tools.registry import is_write_tool
+
+log = logging.getLogger(__name__)
+
+# Maximum messages retained in conversation history (10 user + 10 assistant exchanges).
+HISTORY_CAP = 20
+
+
+def format_history(history: list) -> str:
+    """Format conversation history for inclusion in the LLM prompt."""
+    if not history:
+        return ""
+    lines = []
+    for msg in history:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        lines.append(f"{role}: {content}")
+    return "Previous conversation:\n" + "\n".join(lines) + "\n\n"
+
+
+def format_ui_context(context: dict | None) -> str:
+    """Format structured UI context for the LLM prompt.
+
+    The UI sends context like:
+      {"page": "statistics", "groupSize": 2, "ordering": "hot", "archiveWindow": {"lastDraws": 100}}
+      {"page": "analyze", "numbers": [7,11,17,24,31,36]}
+    """
+    if not context:
+        return ""
+    return f"User's current page context:\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+
+
+def append_history(state: dict, response: str) -> list:
+    """Append the current user message + assistant response to history, capped at HISTORY_CAP."""
+    updated = list(state.get("history", []))
+    updated.append({"role": "user", "content": state["message"]})
+    updated.append({"role": "assistant", "content": response})
+    if len(updated) > HISTORY_CAP:
+        updated = updated[-HISTORY_CAP:]
+    return updated
+
+
+def make_retrieve_node(log_prefix: str) -> Callable[[dict], dict]:
+    """Factory: create a retrieve_docs node with a given log prefix (e.g. 'analyst', 'admin_ops').
+
+    The returned function retrieves from the tier's allowed corpora using the
+    user's message as the query.
+    """
+    def retrieve_docs(state: dict) -> dict:
+        user_sub = state["user_sub"]
+        tier = state["tier"]
+        session_id = state["session_id"]
+        log.info("[%s.retrieve] START user=%s tier=%s session=%s", log_prefix, user_sub, tier, session_id)
+        try:
+            cfg = get_tier_config(tier)
+            chunks = retrieve(
+                query=state["message"],
+                corpora=cfg.rag_corpora,
+                user_sub=user_sub,
+                tier=tier,
+            )
+            log.info("[%s.retrieve] SUCCESS user=%s session=%s chunks=%d", log_prefix, user_sub, session_id, len(chunks))
+            return {"chunks": chunks}
+        except Exception as e:
+            log.error("[%s.retrieve] ERROR user=%s session=%s msg=%s", log_prefix, user_sub, session_id, e, exc_info=True)
+            raise
+    return retrieve_docs
+
+
+def make_hitl_gate(
+    log_prefix: str,
+    execute_node: str,
+    finalize_node: Optional[str] = None,
+    extra_interrupt_fields: Optional[Callable[[dict], dict]] = None,
+) -> Callable[[dict], Command]:
+    """Factory: create a HITL gate node.
+
+    Args:
+        log_prefix: e.g. 'analyst', 'admin_ops' — used in log messages.
+        execute_node: name of the node to goto when a tool is approved or is a read tool.
+        finalize_node: name of the node to goto when no tool is planned (analyst only).
+                       If None (admin_ops), a no-tool plan still goes to execute_node.
+        extra_interrupt_fields: optional callable returning extra fields for the interrupt payload
+                                (e.g. analyst includes the draft).
+
+    The gate interrupts for any write tool. Read tools proceed directly. If no tool
+    is planned, it routes to finalize_node (if provided) or execute_node.
+    """
+    def hitl_gate(state: dict) -> Command:
+        planned_tool = state.get("planned_tool")
+        user_sub = state["user_sub"]
+        session_id = state["session_id"]
+
+        if planned_tool and planned_tool != "none" and is_write_tool(planned_tool):
+            log.info("[%s.hitl] PAUSE user=%s session=%s tool=%s — awaiting approval",
+                     log_prefix, user_sub, session_id, planned_tool)
+            interrupt_payload = {
+                "planned_tool": planned_tool,
+                "tool_args": state.get("tool_args", {}),
+                "prompt": f"Agent wants to call write tool '{planned_tool}'. This will modify data. Approve?",
+            }
+            if extra_interrupt_fields:
+                interrupt_payload.update(extra_interrupt_fields(state))
+            decision = interrupt(interrupt_payload)
+
+            if isinstance(decision, dict) and decision.get("approved"):
+                log.info("[%s.hitl] APPROVED user=%s session=%s tool=%s", log_prefix, user_sub, session_id, planned_tool)
+                edited = decision.get("edited")
+                if edited:
+                    try:
+                        new_args = json.loads(edited)
+                        return Command(update={"tool_args": new_args}, goto=execute_node)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                return Command(update={}, goto=execute_node)
+            else:
+                log.info("[%s.hitl] REJECTED user=%s session=%s tool=%s", log_prefix, user_sub, session_id, planned_tool)
+                return Command(
+                    update={"response": f"Tool call '{planned_tool}' rejected by reviewer."},
+                    goto=END if finalize_node is None else END,
+                )
+
+        # Read tool or no tool.
+        if planned_tool and planned_tool != "none":
+            log.info("[%s.hitl] READ tool proceeds user=%s session=%s tool=%s",
+                     log_prefix, user_sub, session_id, planned_tool)
+            return Command(update={}, goto=execute_node)
+
+        # No tool at all.
+        log.info("[%s.hitl] No tool, proceeding user=%s session=%s", log_prefix, user_sub, session_id)
+        if finalize_node:
+            return Command(update={}, goto=finalize_node)
+        return Command(update={}, goto=execute_node)
+
+    return hitl_gate
+
+
+# Re-export END for convenience in factory closures.
+from langgraph.graph import END  # noqa: E402

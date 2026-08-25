@@ -11,6 +11,7 @@ from __future__ import annotations
 WRITE_TOOLS = frozenset({
     "save_numbers",       # POST to Java BFF → writes saved numbers to DB
     "trigger_scraper",    # triggers Go scraper → writes lottery draw data
+    "edit_file",          # edit agent source code (admin only)
 })
 
 # Read-only tools → execute without HITL.
@@ -24,13 +25,6 @@ READ_TOOLS = frozenset({
     "search_web",         # public web search (admin only)
     "read_code",          # read agent source code (admin only)
     "list_files",         # list agent source files (admin only)
-})
-
-# Write tools (admin self-edit) → HITL required.
-WRITE_TOOLS = frozenset({
-    "save_numbers",       # POST to Java BFF → writes saved numbers to DB
-    "trigger_scraper",    # triggers Go scraper → writes lottery draw data
-    "edit_file",          # edit agent source code (admin only)
 })
 
 # Union of all known tools.
