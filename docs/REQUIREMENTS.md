@@ -30,8 +30,16 @@
 - **FR-31**: Admin shall be able to update the global LLM config via `PUT /llm-config` (admin only) — provider, model, base_url, api_key, request_timeout_seconds.
 - **FR-32**: LLM config updates shall be hot-reloaded — no restart needed. The config store poller refreshes every ~10s, and `PUT /llm-config` forces an immediate refresh.
 - **FR-33**: Admin shall be able to trigger the Go scraper (`trigger_scraper` write tool, requires HITL).
-- **FR-34**: Admin shall be able to read the audit log via `GET /audit-log`.
+- **FR-34**: Admin shall be able to read the audit log via `GET /audit-log` (optional `limit` query param, default 50).
 - **FR-35**: Admin shall be able to read token usage stats via `GET /token-usage`.
+- **FR-36**: The agent shall expose `GET /sessions` (any authenticated user) to list the caller's chat sessions (newest first) with the tier's session limit, `GET /sessions/{session_id}` to load a session's full message history from the checkpointer, `DELETE /sessions/{session_id}` to delete one session, and `DELETE /sessions` to delete all of the caller's sessions.
+- **FR-37**: Chat sessions shall be indexed in `agent.chat_sessions` (title, preview, timestamps); full message history is reconstructed from the LangGraph checkpointer state — messages are never duplicated in `chat_sessions`.
+- **FR-38**: Tier-based session retention limits shall be enforced: free=1, paid=15, admin=unlimited. When a user exceeds their limit, the oldest sessions (by `updated_at`) are pruned automatically — both the `chat_sessions` row and the checkpointer state for that thread are deleted.
+- **FR-39**: The agent shall expose `GET /llm-configs` (admin only) to list all stored LLM configurations and `POST /llm-configs` (admin only) to create a new stored configuration.
+- **FR-40**: The agent shall expose `PUT /llm-configs/{config_id}/activate` (admin only) to activate a stored configuration, `POST /llm-configs/{config_id}/test` (admin only) to smoke-test a stored configuration, and `DELETE /llm-configs/{config_id}` (admin only) to delete a stored configuration.
+- **FR-41**: The agent shall expose `GET /llm-models?provider=...` (admin only) to list models available from a given provider. Ollama is queried live via its `/api/tags` endpoint; Gemini, OpenAI, and Anthropic return static model lists.
+- **FR-42**: The agent shall expose `POST /reindex` (admin only) to rebuild the `docs` RAG corpus by ingesting markdown from `app/rag/docs_source/` into `agent.embeddings` with content-hash dedup (unchanged chunks are skipped).
+- **FR-43**: The supervisor shall accept an optional structured `context` dict (page, selected numbers, groupSize, etc.) from the `/chat` request and forward it to worker subgraphs for grounding.
 
 ## Tier Requirements
 
@@ -59,25 +67,26 @@
 
 - Workers: all three (`nl_assistant`, `analyst`, `admin_ops`)
 - RAG corpora: `docs`, `lottery_history`, `user_data` (all users), `ops_logs`
-- Write tools: `save_numbers`, `trigger_scraper` (both require HITL)
-- Read tools: all read tools including `query_audit_log`, `read_token_usage`
-- HITL: on `save_numbers`, `trigger_scraper`
+- Write tools: `save_numbers`, `trigger_scraper`, `edit_file` (all require HITL)
+- Read tools: all read tools including `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`
+- HITL: on `save_numbers`, `trigger_scraper`, `edit_file`
 - Daily budget: $0 (no limit — owner)
 - Recursion limit: 50 super-steps
+- Saved sessions: unlimited
 - Admin bypasses `user_data` RAG filter — sees all users' data
 
 ## Tool Requirements
 
 - **TR-1**: All tools shall be classified as either `WRITE_TOOLS` or `READ_TOOLS` in `app/tools/registry.py` (frozensets).
-- **TR-2**: `WRITE_TOOLS` (`save_numbers`, `trigger_scraper`) shall require HITL approval before executing — the graph interrupts automatically.
-- **TR-3**: `READ_TOOLS` (`generate_form`, `get_statistics`, `analyze`, `list_saved_numbers`, `query_audit_log`, `read_token_usage`) shall execute without HITL.
+- **TR-2**: `WRITE_TOOLS` (`save_numbers`, `trigger_scraper`, `edit_file`) shall require HITL approval before executing — the graph interrupts automatically.
+- **TR-3**: `READ_TOOLS` (`generate_form`, `get_statistics`, `analyze`, `list_saved_numbers`, `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`) shall execute without HITL.
 - **TR-4**: Tool availability shall be gated by tier — the supervisor downgrades disallowed intents to `nl_assistant`.
 - **TR-5**: Tools shall gracefully degrade when backend services are unavailable (empty `LOTTERY_GRPC_HOST` → tools return empty; empty `BFF_BASE_URL` → saved_numbers tools return empty).
 
 ## LLM Requirements
 
 - **LR-1**: There shall be a single global LLM for all tiers — no per-tier model selection.
-- **LR-2**: Default provider shall be Ollama (`llama3.1:8b`) for local development.
+- **LR-2**: Default provider shall be Ollama (`qwen3:8b`) for local development.
 - **LR-3**: The LLM shall be configurable at runtime by admin via `PUT /llm-config` — provider, model, base_url, api_key, timeout.
 - **LR-4**: LLM config changes shall hot-reload without restart via a poller (every ~10s) and immediate `force_refresh()` on update.
 - **LR-5**: Supported providers: `ollama`, `gemini`, `mock` (for tests).
@@ -100,7 +109,7 @@
 - **SR-2**: JWT validation shall verify the signature against Keycloak JWKS (`RS256` algorithm) when `JWT_VERIFY=true`.
 - **SR-3**: In dev/test mode (`JWT_VERIFY=false`), the agent shall decode the JWT without signature verification but still extract claims.
 - **SR-4**: Tier shall be extracted from JWT claims with priority: explicit `tier` claim > group membership (`/admins`, `/paid`, `/users`) > realm roles > `free`.
-- **SR-5**: `PUT /llm-config`, `GET /token-usage`, and `GET /audit-log` shall be admin-only — `require_admin()` raises `JWTError` for non-admin tiers.
+- **SR-5**: Admin-only endpoints (`PUT /llm-config`, `GET /llm-configs`, `POST /llm-configs`, `PUT /llm-configs/{config_id}/activate`, `POST /llm-configs/{config_id}/test`, `DELETE /llm-configs/{config_id}`, `GET /llm-models`, `GET /token-usage`, `GET /audit-log`, `POST /reindex`) shall require admin — `require_admin()` raises `JWTError` for non-admin tiers.
 - **SR-6**: The raw JWT token shall be passed through to tools (e.g., `save_numbers` forwards it to the Java BFF for backend authorization).
 
 ## Metering Requirements

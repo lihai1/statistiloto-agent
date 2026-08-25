@@ -32,6 +32,7 @@ class SupervisorState(TypedDict):
     intent: Optional[Literal["nl_assistant", "analyst", "admin_ops"]]
     jwt_token: str
     history: list
+    context: Optional[dict]         # structured UI context (page, numbers, groupSize, etc.)
     # Worker output bubbles up here.
     response: Optional[str]
     chunks: list

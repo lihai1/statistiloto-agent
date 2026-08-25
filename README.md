@@ -46,11 +46,12 @@ The **supervisor graph** is the single choke point for tier gating. It routes by
 |---|---|---|---|
 | Workers | `nl_assistant` only | `nl_assistant`, `analyst` | all three |
 | RAG corpora | `docs` | `docs`, `lottery_history` | `docs`, `lottery_history`, `user_data` (all users), `ops_logs` |
-| Write tools | none | `save_numbers` | `save_numbers`, `trigger_scraper` |
-| Read tools | `generate_form`, `get_statistics`, `analyze` | + `list_saved_numbers` | + `query_audit_log`, `read_token_usage` |
-| HITL | never (no write tools) | on `save_numbers` | on `save_numbers`, `trigger_scraper` |
+| Write tools | none | `save_numbers` | `save_numbers`, `trigger_scraper`, `edit_file` |
+| Read tools | `generate_form`, `get_statistics`, `analyze` | + `list_saved_numbers` | + `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files` |
+| HITL | never (no write tools) | on `save_numbers` | on `save_numbers`, `trigger_scraper`, `edit_file` |
 | Daily budget | $0 (no limit) | $5.00 | $0 (no limit — owner) |
 | Recursion limit | 6 | 25 | 50 |
+| Saved sessions | 1 | 15 | unlimited |
 
 > **Admin** is the owner/developer super-user — NOT a paid tier. Admin has no budget limit and sees all users' data (the `user_data` RAG filter is bypassed for admin).
 
@@ -61,10 +62,21 @@ The **supervisor graph** is the single choke point for tier gating. It routes by
 | `POST` | `/chat` | any authenticated user | Process a chat message. Returns `{response, thread_id}` or `{paused: true, thread_id}` for HITL. Uses SSE for streaming. |
 | `POST` | `/approve` | any authenticated user | Resume a paused HITL thread with a human decision (`approved: bool`, optional `edited` value). |
 | `GET` | `/healthz` | none | Health check — returns `{"status": "ok"}`. |
+| `GET` | `/sessions` | any authenticated user | List the caller's chat sessions (newest first) with the tier's session limit. |
+| `GET` | `/sessions/{session_id}` | any authenticated user | Load a session's full message history from the checkpointer. |
+| `DELETE` | `/sessions/{session_id}` | any authenticated user | Delete one chat session and its checkpointer state. |
+| `DELETE` | `/sessions` | any authenticated user | Delete all of the caller's chat sessions. |
 | `GET` | `/llm-config` | any authenticated user | Read the current global LLM config (provider, model, base_url, etc.). |
 | `PUT` | `/llm-config` | admin only | Update the global LLM config. Hot-reloaded within ~10s via poller (or immediately via `force_refresh()`). |
+| `GET` | `/llm-configs` | admin only | List all stored LLM configurations. |
+| `POST` | `/llm-configs` | admin only | Create a new stored LLM configuration. |
+| `PUT` | `/llm-configs/{config_id}/activate` | admin only | Activate a stored LLM configuration by id. |
+| `POST` | `/llm-configs/{config_id}/test` | admin only | Smoke-test a stored LLM configuration. |
+| `DELETE` | `/llm-configs/{config_id}` | admin only | Delete a stored LLM configuration. |
+| `GET` | `/llm-models?provider=...` | admin only | List models available from a given provider (Ollama queried live via `/api/tags`; Gemini/OpenAI/Anthropic return static lists). |
 | `GET` | `/token-usage` | admin only | Read aggregated token usage stats from `agent.token_usage`. |
-| `GET` | `/audit-log` | admin only | Read recent audit log entries from the DB. |
+| `GET` | `/audit-log?limit=50` | admin only | Read recent audit log entries from the DB (optional `limit`, default 50). |
+| `POST` | `/reindex` | admin only | Rebuild the `docs` RAG corpus: ingest markdown from `app/rag/docs_source/` into `agent.embeddings` (content-hash dedup). |
 
 ## Tool Classification
 
@@ -76,6 +88,7 @@ Tools are classified in `app/tools/registry.py` as `WRITE_TOOLS` and `READ_TOOLS
 |---|---|---|
 | `save_numbers` | Java BFF (POST) | Writes saved numbers to DB |
 | `trigger_scraper` | Go service | Triggers Go scraper, writes lottery draw data |
+| `edit_file` | local FS (admin only) | Edits a file in the agent's own source tree |
 
 ### Read Tools (no HITL)
 
@@ -87,6 +100,9 @@ Tools are classified in `app/tools/registry.py` as `WRITE_TOOLS` and `READ_TOOLS
 | `list_saved_numbers` | Java BFF (GET) | Reads saved numbers |
 | `query_audit_log` | DB SELECT | Reads audit log |
 | `read_token_usage` | DB SELECT | Reads token stats |
+| `search_web` | DuckDuckGo (admin only) | Public web search |
+| `read_code` | local FS (admin only) | Reads a file from the agent's source tree |
+| `list_files` | local FS (admin only) | Lists files under a directory |
 
 ## Project Structure
 
@@ -106,11 +122,13 @@ agent/
 │   ├── metering.py            # Token metering decorator + daily budget check
 │   ├── hitl.py                # Human-in-the-loop interrupt helpers
 │   ├── checkpointer.py        # PostgresSaver checkpointer management
+│   ├── prompts.py             # Shared LLM prompt constants (domain knowledge, language rules)
+│   ├── sessions.py            # Chat session history (list/load/delete) + tier retention limits
 │   ├── config/
 │   │   ├── settings.py        # YAML + env config, tier configs
 │   │   └── agent.yaml         # Default config values
 │   ├── graphs/
-│   │   ├── supervisor.py      # Top-level router (tier + intent gating)
+│   │   ├── supervisor.py      # Top-level router (tier + intent gating, accepts UI context)
 │   │   ├── nl_assistant.py    # NL lottery assistant subgraph
 │   │   ├── analyst.py         # Multi-step analysis subgraph (RAG + tools)
 │   │   └── admin_ops.py       # Admin operations subgraph (HITL on writes)
@@ -122,7 +140,9 @@ agent/
 │   ├── rag/
 │   │   ├── store.py           # psycopg3 connection pool (singleton)
 │   │   ├── retriever.py       # Role-scoped, per-tenant pgvector retrieval
-│   │   └── indexers.py        # Document indexing into pgvector
+│   │   ├── indexers.py        # Document indexing into pgvector
+│   │   ├── ingest.py          # Docs ingestion (markdown → embeddings, content-hash dedup)
+│   │   └── docs_source/       # Product docs (.md) indexed into the 'docs' corpus
 │   ├── llm/
 │   │   ├── config_store.py    # Global LLM config store + hot-reload poller
 │   │   └── router.py          # LLM provider routing (Ollama / Gemini / mock)
@@ -181,7 +201,7 @@ Settings are loaded from `app/config/agent.yaml` with environment variable overr
 | `LLM_PROVIDER` | `ollama` | LLM provider: `ollama` \| `gemini` \| `mock` |
 | `LLM_MOCK` | `false` | Set to `true` to use `FakeListChatModel` for tests |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama API URL |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model name |
+| `OLLAMA_MODEL` | `qwen3:8b` | Ollama model name (better Hebrew + tool calling; `gemma3:12b` is a higher-quality alternative) |
 | `GEMINI_API_KEY` | _(empty)_ | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model name |
 | `DB_URI` | `postgresql://postgres:postgres@db:5432/statistiloto` | PostgreSQL connection string |

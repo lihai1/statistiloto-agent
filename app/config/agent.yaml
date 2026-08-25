@@ -6,7 +6,7 @@ llm:
   provider: ollama              # ollama | gemini  (admin can switch at runtime)
   ollama:
     base_url: "http://ollama:11434"
-    model: "llama3.1:8b"
+    model: "qwen3:8b"            # better Hebrew + native tool calling than llama3.1:8b
   gemini:
     api_key: ""
     model: "gemini-2.0-flash"
@@ -50,6 +50,10 @@ tiers:
       - trigger_scraper         # write tool → HITL triggers automatically
       - query_audit_log
       - read_token_usage
+      - search_web
+      - read_code               # read agent source code
+      - list_files              # list agent source files
+      - edit_file               # write tool → HITL triggers automatically
     rag_corpora:
       - docs
       - lottery_history

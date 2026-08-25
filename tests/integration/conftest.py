@@ -65,6 +65,7 @@ def clean_db(db_pool):
         conn.execute("DELETE FROM agent.audit_log")
         conn.execute("DELETE FROM agent.llm_config")
         conn.execute("DELETE FROM agent.embeddings")
+        conn.execute("DELETE FROM agent.chat_sessions")
     yield
 
 
@@ -161,9 +162,15 @@ def mock_tool_clients():
     from app.tools import lottery_grpc, saved_numbers
 
     lottery_grpc.set_mock_client({
-        "generate_form": lambda **kw: {"forms": [[1, 2, 3, 4, 5, 6]]},
-        "get_statistics": lambda **kw: {"pairs": [{"numbers": [1, 2], "count": 10}]},
-        "analyze": lambda **kw: {"matches": [], "frequency": {}},
+        "generate_form": lambda **kw: {"forms": [{"numbers": [1, 2, 3, 4, 5, 6], "strong": 7}]},
+        "get_statistics": lambda **kw: {"groups": [{"numbers": [1, 2], "count": 10}]},
+        "analyze": lambda **kw: {
+            "frequency_groups": [
+                {"size": 1, "combos": 37, "entries": [{"numbers": [7], "count": 5}]},
+                {"size": 2, "combos": 666, "entries": [{"numbers": [7, 17], "count": 3}]},
+            ],
+            "archive_size": 100,
+        },
     })
     saved_numbers.set_mock_client({
         "list_saved_numbers": lambda **kw: {"numbers": []},

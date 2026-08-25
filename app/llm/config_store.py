@@ -34,6 +34,56 @@ class LLMConfig:
     request_timeout_seconds: int = 300
 
 
+def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
+    """Build a chat model instance from config.
+
+    Module-level function so it can be called without a full LLMConfigStore
+    (e.g. for the test-connection endpoint).
+    """
+    timeout = cfg.request_timeout_seconds or 300
+
+    if cfg.provider == "mock":
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+        responses = mock_responses or ["Mock LLM response"]
+        return FakeListChatModel(responses=responses)
+
+    if cfg.provider == "ollama":
+        from langchain_ollama import ChatOllama
+        return ChatOllama(
+            model=cfg.model,
+            base_url=cfg.base_url or "http://ollama:11434",
+            timeout=timeout,
+        )
+
+    if cfg.provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=cfg.model,
+            google_api_key=cfg.api_key,
+            timeout=timeout,
+        )
+
+    if cfg.provider == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=cfg.model,
+            api_key=cfg.api_key,
+            base_url=cfg.base_url or "https://api.openai.com/v1",
+            timeout=timeout,
+        )
+
+    if cfg.provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model=cfg.model,
+            api_key=cfg.api_key,
+            base_url=cfg.base_url or "https://api.anthropic.com",
+            timeout=timeout,
+        )
+
+    raise ValueError(f"Unknown LLM provider: {cfg.provider}")
+
+
 class LLMConfigStore:
     """Reads agent.llm_config table for the active global LLM.
 
@@ -85,18 +135,28 @@ class LLMConfigStore:
         )
 
     def _read_db(self) -> Optional[LLMConfig]:
-        """Read the latest llm_config row from the DB. Returns None if no row or error."""
+        """Read the active llm_config row from the DB. Returns None if no row or error.
+
+        Prefers the row with is_active=TRUE. Falls back to the latest by
+        updated_at for backward compat with pre-migration databases.
+        """
         try:
             pool = self._get_pool()
             if pool is None:
                 return None
             with pool.connection() as conn:
-                # Try with request_timeout_seconds column; fall back without it
+                # Try the new schema: is_active column + request_timeout_seconds.
                 try:
                     row = conn.execute(
                         "SELECT provider, model, base_url, api_key, request_timeout_seconds "
-                        "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
+                        "FROM agent.llm_config WHERE is_active = TRUE LIMIT 1"
                     ).fetchone()
+                    if not row:
+                        # No active row — fall back to latest by updated_at.
+                        row = conn.execute(
+                            "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                            "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
+                        ).fetchone()
                     if row:
                         return LLMConfig(
                             provider=row[0],
@@ -124,30 +184,7 @@ class LLMConfigStore:
 
     def _build_llm(self, cfg: LLMConfig):
         """Build a chat model instance from config."""
-        timeout = cfg.request_timeout_seconds or 300
-
-        if cfg.provider == "mock":
-            from langchain_core.language_models.fake_chat_models import FakeListChatModel
-            responses = self._mock_responses or ["Mock LLM response"]
-            return FakeListChatModel(responses=responses)
-
-        if cfg.provider == "ollama":
-            from langchain_ollama import ChatOllama
-            return ChatOllama(
-                model=cfg.model,
-                base_url=cfg.base_url or "http://ollama:11434",
-                timeout=timeout,
-            )
-
-        if cfg.provider == "gemini":
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            return ChatGoogleGenerativeAI(
-                model=cfg.model,
-                google_api_key=cfg.api_key,
-                timeout=timeout,
-            )
-
-        raise ValueError(f"Unknown LLM provider: {cfg.provider}")
+        return build_llm(cfg, mock_responses=self._mock_responses)
 
     def _refresh(self):
         """Reload config from DB (or boot default) and rebuild the LLM."""

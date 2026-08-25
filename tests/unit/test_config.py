@@ -14,7 +14,7 @@ class TestSettings:
         reload_settings()
         s = get_settings()
         assert s.llm.provider == "ollama"
-        assert s.llm.ollama.model == "llama3.1:8b"
+        assert s.llm.ollama.model == "qwen3:8b"
 
     def test_env_overrides(self):
         os.environ["LLM_PROVIDER"] = "gemini"

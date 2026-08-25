@@ -21,6 +21,16 @@ READ_TOOLS = frozenset({
     "list_saved_numbers", # Java BFF GET → reads saved numbers
     "query_audit_log",    # DB SELECT → reads audit log
     "read_token_usage",   # DB SELECT → reads token stats
+    "search_web",         # public web search (admin only)
+    "read_code",          # read agent source code (admin only)
+    "list_files",         # list agent source files (admin only)
+})
+
+# Write tools (admin self-edit) → HITL required.
+WRITE_TOOLS = frozenset({
+    "save_numbers",       # POST to Java BFF → writes saved numbers to DB
+    "trigger_scraper",    # triggers Go scraper → writes lottery draw data
+    "edit_file",          # edit agent source code (admin only)
 })
 
 # Union of all known tools.

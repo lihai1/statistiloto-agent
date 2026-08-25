@@ -21,6 +21,7 @@ from typing_extensions import TypedDict
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
 from app.metering import meter_llm
+from app.prompts import SYSTEM_PROMPT_WITH_TOOLS
 from app.rag.retriever import retrieve
 from app.tools.registry import is_write_tool
 
@@ -35,6 +36,7 @@ class AnalystState(TypedDict):
     jwt_token: str
     chunks: list
     history: list
+    context: Optional[dict]           # structured UI context
     draft: Optional[str]
     planned_tool: Optional[str]       # tool name the LLM decided to call
     tool_args: Optional[dict]         # arguments for the planned tool
@@ -81,41 +83,41 @@ def draft_analysis(state: AnalystState) -> dict:
         cfg = get_tier_config(state["tier"])
         tools_str = ", ".join(cfg.allowed_tools)
         hist = _format_history(state.get("history", []))
+        ui_context = _format_ui_context(state.get("context"))
         prompt = (
+            f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
+            f"Available tools for this user: {tools_str}\n\n"
             f"Context:\n{ctx}\n\n"
+            f"{ui_context}"
             f"{hist}"
             f"Question: {state['message']}\n\n"
-            f"Provide a detailed analysis. If you need to call a tool, "
-            f"respond with exactly one line:\n"
+            f"If the user wants you to call a tool, output EXACTLY ONE LINE:\n"
             f"  TOOL: <tool_name> ARGS: <json_args>\n"
-            f"Available tools: {tools_str}\n"
-            f"Otherwise, provide your analysis as plain text."
+            f"If no tool is needed, output a plain text analysis only."
         )
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
 
         # Parse tool call from response.
-        # Format: "TOOL: <tool_name> ARGS: <json_args>"
+        # Format: "TOOL: <tool_name> ARGS: <json_args>" (case-insensitive, optional space before ARGS).
         planned_tool = None
         tool_args = {}
+        import re, json
         for line in content.split("\n"):
             stripped = line.strip()
             if stripped.upper().startswith("TOOL:"):
                 rest = stripped[5:].strip()  # everything after "TOOL:"
-                # Split on " ARGS:" to separate tool name from args.
-                if " ARGS:" in rest:
-                    tool_part, args_part = rest.split(" ARGS:", 1)
-                    planned_tool = tool_part.strip()
-                    args_str = args_part.strip()
-                    import json
+                # Split at the first case-insensitive "ARGS:" with optional surrounding whitespace.
+                parts = re.split(r"(?i)\s*ARGS:\s*", rest, maxsplit=1)
+                planned_tool = parts[0].strip()
+                if planned_tool.lower() == "none":
+                    planned_tool = "none"
+                args_str = parts[1].strip() if len(parts) > 1 else ""
+                if args_str:
                     try:
-                        tool_args = json.loads(args_str) if args_str else {}
+                        tool_args = json.loads(args_str)
                     except (json.JSONDecodeError, ValueError):
                         tool_args = {}
-                else:
-                    planned_tool = rest.strip()
-                    if planned_tool.lower() == "none":
-                        planned_tool = "none"
                 break
 
         log.info("[analyst.draft] SUCCESS user=%s session=%s planned_tool=%s", user_sub, session_id, planned_tool)
@@ -202,6 +204,9 @@ def execute_tool(state: AnalystState) -> dict:
 def finalize(state: AnalystState) -> dict:
     """Set the final response from the draft, incorporating tool results if any.
     Also appends the current exchange to conversation history for the checkpointer.
+
+    When a tool result is present, the LLM is invoked to transform the structured
+    result into concise natural language (per the grounding rules in the system prompt).
     """
     user_sub = state["user_sub"]
     session_id = state["session_id"]
@@ -209,7 +214,26 @@ def finalize(state: AnalystState) -> dict:
     tool_result = state.get("tool_result")
 
     if tool_result:
-        response = f"{draft}\n\nTool result: {tool_result}"
+        # Invoke the LLM to format the tool result into readable text.
+        try:
+            llm = get_llm()
+            hist = _format_history(state.get("history", []))
+            import json
+            prompt = (
+                f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
+                f"{hist}"
+                f"User question: {state['message']}\n\n"
+                f"Tool result (JSON):\n{json.dumps(tool_result, ensure_ascii=False, indent=2)}\n\n"
+                f"Transform this tool result into a concise, readable natural language response. "
+                f"Follow the language, grounding, and formatting rules from the system prompt. "
+                f"Do NOT dump raw JSON. Do NOT fabricate data not in the tool result. "
+                f"If the tool result contains an error, say you couldn't retrieve the data."
+            )
+            resp = llm.invoke(prompt)
+            response = resp.content if hasattr(resp, "content") else str(resp)
+        except Exception as e:
+            log.error("[analyst.finalize] LLM formatting failed: %s — using raw result", e)
+            response = f"{draft}\n\nTool result: {tool_result}"
     else:
         response = draft
 
@@ -231,18 +255,26 @@ def _call_tool(tool_name: str, args: dict, user_sub: str, jwt_token: str) -> dic
     if tool_name == "generate_form":
         return lottery_grpc.generate_form(
             how_many=args.get("how_many", 1),
-            form_type=args.get("form_type", 0),
+            form_type=args.get("form_type", 6),
             will_be=args.get("will_be"),
             strength=args.get("strength", 2),
+            window_from=args.get("window_from"),
+            window_to=args.get("window_to"),
         )
     elif tool_name == "get_statistics":
         return lottery_grpc.get_statistics(
             how_many=args.get("how_many", 10),
-            form_type=args.get("form_type", 0),
-            strength=args.get("strength", 2),
+            group_size=args.get("group_size", args.get("form_type", 2)),
+            strength=args.get("strength", "hot"),
+            window_from=args.get("window_from"),
+            window_to=args.get("window_to"),
         )
     elif tool_name == "analyze":
-        return lottery_grpc.analyze(form=args.get("form", []))
+        return lottery_grpc.analyze(
+            form=args.get("form", []),
+            window_from=args.get("window_from"),
+            window_to=args.get("window_to"),
+        )
     elif tool_name == "list_saved_numbers":
         return saved_numbers.list_saved_numbers(user_sub=user_sub, jwt_token=jwt_token)
     elif tool_name == "save_numbers":
@@ -284,3 +316,11 @@ def _format_history(history: list) -> str:
         content = msg.get("content", "")
         lines.append(f"{role}: {content}")
     return "Previous conversation:\n" + "\n".join(lines) + "\n\n"
+
+
+def _format_ui_context(context: dict | None) -> str:
+    """Format structured UI context for the LLM prompt."""
+    if not context:
+        return ""
+    import json
+    return f"User's current page context:\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"

@@ -21,9 +21,10 @@ from typing_extensions import TypedDict
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
 from app.metering import meter_llm
+from app.prompts import SYSTEM_PROMPT_WITH_TOOLS
 from app.rag.retriever import retrieve
 from app.security import TokenClaims
-from app.tools import admin_ops
+from app.tools import admin_ops, online_search, code_editor
 from app.tools.registry import is_write_tool
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,23 @@ class AdminOpsState(TypedDict):
     tool_args: Optional[dict]
     tool_result: Optional[dict]
     response: Optional[str]
+
+
+def _extract_app_path(text: str) -> str | None:
+    """Crudely extract an app/... path (file or directory) from the user message."""
+    import re
+    m = re.search(r"\b(app/[\w./-]+)\b", text)
+    return m.group(1) if m else None
+
+
+def _extract_quoted_content(text: str) -> str | None:
+    """Extract the content in the last '...' or \"...\" of a 'replace with ...' request."""
+    import re
+    for pattern in (r"with '([^']+)'", r'with "([^"]+)"'):
+        m = re.search(pattern, text)
+        if m:
+            return m.group(1)
+    return None
 
 
 def retrieve_docs(state: AdminOpsState) -> dict:
@@ -85,38 +103,100 @@ def plan_action(state: AdminOpsState) -> dict:
         tools_str = ", ".join(cfg.allowed_tools)
         hist = _format_history(state.get("history", []))
         prompt = (
-            f"Context:\n{ctx}\n\n"
-            f"{hist}"
-            f"Admin request: {state['message']}\n\n"
-            f"Determine the action to take. Respond with exactly one line:\n"
-            f"  TOOL: <tool_name> ARGS: <json_args>\n"
-            f"Available tools: {tools_str}\n"
-            f"If no action is needed, respond with TOOL: none"
+            f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
+            f"You are the owner admin. Map the request to one of these tools: {tools_str}.\n"
+            f"Output EXACTLY ONE LINE and nothing else:\n"
+            f"  TOOL: <tool_name> ARGS: <json_args>\n\n"
+            f"Worked examples (the user may ask exactly like this):\n"
+            f"  Admin request: Show me the recent token usage for all users.\n"
+            f"  Output: TOOL: read_token_usage ARGS: {{\"days\": 7}}\n\n"
+            f"  Admin request: Show me the latest audit logs.\n"
+            f"  Output: TOOL: query_audit_log ARGS: {{\"limit\": 50}}\n\n"
+            f"  Admin request: Run the scraper.\n"
+            f"  Output: TOOL: trigger_scraper ARGS: {{}}\n\n"
+            f"  Admin request: Search the web for recent lottery regulation changes.\n"
+            f"  Output: TOOL: search_web ARGS: {{\"query\": \"lottery regulation changes 2025\", \"limit\": 5}}\n\n"
+            f"  Admin request: Show me app/graphs/admin_ops.py.\n"
+            f"  Output: TOOL: read_code ARGS: {{\"file_path\": \"app/graphs/admin_ops.py\"}}\n\n"
+            f"  Admin request: List files in app/tools.\n"
+            f"  Output: TOOL: list_files ARGS: {{\"directory\": \"app/tools\"}}\n\n"
+            f"  Admin request: Replace the welcome text in app/main.py.\n"
+            f"  Output: TOOL: edit_file ARGS: {{\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}}\n\n"
+            f"Rules:\n"
+            f"  - 'token usage' or 'costs' or 'billing' -> read_token_usage\n"
+            f"  - 'audit' or 'logs' -> query_audit_log\n"
+            f"  - 'scraper' or 'scrape' or 'refresh draws' -> trigger_scraper\n"
+            f"  - 'search the web' or 'look up' or 'find online' -> search_web\n"
+            f"  - 'show me' or 'read' or 'view' a file -> read_code\n"
+            f"  - 'list files' or 'files in' -> list_files\n"
+            f"  - 'edit' or 'replace' or 'change' a file -> edit_file\n\n"
+            f"If the request does not match any tool, output: TOOL: none"
         )
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
 
         # Parse tool call from response.
-        # Format: "TOOL: <tool_name> ARGS: <json_args>"
+        # Format: "TOOL: <tool_name> ARGS: <json_args>" (case-insensitive, optional space before ARGS).
         planned_tool = None
         tool_args = {}
+        import re, json
         for line in content.split("\n"):
             stripped = line.strip()
             if stripped.upper().startswith("TOOL:"):
                 rest = stripped[5:].strip()  # everything after "TOOL:"
-                # Split on " ARGS:" to separate tool name from args.
-                if " ARGS:" in rest:
-                    tool_part, args_part = rest.split(" ARGS:", 1)
-                    planned_tool = tool_part.strip()
-                    args_str = args_part.strip()
-                    import json
+                # Split at the first case-insensitive "ARGS:" with optional surrounding whitespace.
+                parts = re.split(r"(?i)\s*ARGS:\s*", rest, maxsplit=1)
+                planned_tool = parts[0].strip()
+                args_str = parts[1].strip() if len(parts) > 1 else ""
+                if args_str:
                     try:
-                        tool_args = json.loads(args_str) if args_str else {}
+                        tool_args = json.loads(args_str)
                     except (json.JSONDecodeError, ValueError):
                         tool_args = {}
-                else:
-                    planned_tool = rest.strip()
                 break
+
+        # Small-model guard: for well-known admin phrases, force the right tool
+        # even if the LLM picked a different one (or none).
+        message_lower = state["message"].lower()
+        expected = None
+        if any(k in message_lower for k in ("token", "usage", "cost")):
+            expected = ("read_token_usage", {"days": 7})
+        elif any(k in message_lower for k in ("audit", "log")):
+            expected = ("query_audit_log", {"limit": 50})
+        elif any(k in message_lower for k in ("scrape", "scraper", "refresh draws")):
+            expected = ("trigger_scraper", {})
+        elif any(k in message_lower for k in ("search the web", "look up", "find online")):
+            expected = ("search_web", {
+                "query": tool_args.get("query", state["message"].strip()),
+                "limit": tool_args.get("limit", 5),
+            })
+        else:
+            app_path = _extract_app_path(state["message"])
+            if app_path:
+                if any(k in message_lower for k in ("show me", "read", "view")) and app_path.endswith(".py"):
+                    expected = ("read_code", {"file_path": tool_args.get("file_path", app_path)})
+                elif any(k in message_lower for k in ("list files", "files in")):
+                    expected = ("list_files", {"directory": tool_args.get("directory", app_path)})
+                elif any(k in message_lower for k in ("edit", "replace", "change")) and app_path.endswith(".py"):
+                    content = tool_args.get("content")
+                    old_string = tool_args.get("old_string")
+                    new_string = tool_args.get("new_string")
+                    quoted = _extract_quoted_content(state["message"])
+                    # Full overwrite requests: if user asked to replace "entire content" and quoted the new text, prefer `content`.
+                    if content is None and ("entire content" in message_lower or "full content" in message_lower or "replace all" in message_lower) and quoted:
+                        content = quoted
+                    elif content is None and (old_string is None or new_string is None):
+                        # No args yet; use any quoted text as the full content for a simple overwrite.
+                        content = quoted
+                    expected = ("edit_file", {
+                        "file_path": tool_args.get("file_path", app_path),
+                        "old_string": old_string,
+                        "new_string": new_string,
+                        "content": content,
+                    })
+        if expected:
+            planned_tool, tool_args = expected
+            log.info("[admin_ops.plan] GUARD user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
 
         log.info("[admin_ops.plan] SUCCESS user=%s session=%s planned_tool=%s", user_sub, session_id, planned_tool)
         return {
@@ -207,6 +287,22 @@ def execute(state: AdminOpsState) -> dict:
                 category=tool_args.get("category", "default"),
                 numbers=tool_args.get("numbers", []),
                 will_be=tool_args.get("will_be"),
+            )
+        elif planned_tool == "search_web":
+            result = online_search.search_web(
+                query=tool_args.get("query", ""),
+                limit=tool_args.get("limit", 5),
+            )
+        elif planned_tool == "read_code":
+            result = code_editor.read_code(file_path=tool_args.get("file_path", ""))
+        elif planned_tool == "list_files":
+            result = code_editor.list_files(directory=tool_args.get("directory"))
+        elif planned_tool == "edit_file":
+            result = code_editor.edit_file(
+                file_path=tool_args.get("file_path", ""),
+                old_string=tool_args.get("old_string"),
+                new_string=tool_args.get("new_string"),
+                content=tool_args.get("content"),
             )
         else:
             result = {"status": "unknown_action", "message": f"Unknown tool: {planned_tool}"}

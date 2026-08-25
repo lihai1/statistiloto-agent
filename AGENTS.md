@@ -11,10 +11,14 @@ Python LangGraph agent worker with hierarchical multi-agent orchestration (Optio
 - **Single global LLM** for all tiers — Ollama in dev, configurable at runtime by admin
 - **Admin is the owner/developer super-user**, NOT a paid tier — no budget limit, sees all users' data
 - **RAG** with pgvector — role-scoped corpora, per-tenant `user_data` filtering (admin bypasses user_sub filter)
-- **HITL** triggers automatically on ANY write tool call (save_numbers, trigger_scraper) — not configurable per tier, not based on confidence
+- **HITL** triggers automatically on ANY write tool call (save_numbers, trigger_scraper, edit_file) — not configurable per tier, not based on confidence
 - **Token metering** — every LLM call logged to `agent.token_usage`; only admin can read token consumption
 - **Recursion limit** — per-tier cap on graph super-steps (free=6, paid=25, admin=50) wired into `graph.invoke()`
 - **gRPC** to Go lottery-stats-server via generated stubs from `proto/lottery.proto`
+- **Chat sessions** — `app/sessions.py` indexes conversations in `agent.chat_sessions` (title, preview, timestamps) and reconstructs full history from the LangGraph checkpointer. Tier-based retention: free=1, paid=15, admin=unlimited; oldest sessions pruned automatically.
+- **UI context** — the supervisor accepts an optional structured `context` dict (page, selected numbers, groupSize, etc.) from the BFF `/chat` request, forwarded to workers for grounding.
+- **Shared prompts** — `app/prompts.py` centralizes domain-knowledge and language-rule constants used by all three worker subgraphs.
+- **Docs RAG ingestion** — `app/rag/ingest.py` loads markdown from `app/rag/docs_source/` into the `docs` corpus with content-hash dedup; triggered by `POST /reindex` (admin).
 
 ## Tool classification (HITL gating)
 
@@ -29,6 +33,9 @@ Read-only tools (execute without HITL):
 - `list_saved_numbers` — Java BFF GET, reads saved numbers
 - `query_audit_log` — DB SELECT, reads audit log
 - `read_token_usage` — DB SELECT, reads token stats
+- `search_web` — DuckDuckGo web search (admin only)
+- `read_code` — read a file from the agent's own source tree (admin only)
+- `list_files` — list files under a directory (admin only)
 
 Classification is in `app/tools/registry.py` — `WRITE_TOOLS` and `READ_TOOLS` frozensets.
 
@@ -38,9 +45,9 @@ Classification is in `app/tools/registry.py` — `WRITE_TOOLS` and `READ_TOOLS` 
 |---|---|---|---|
 | Workers | nl_assistant only | nl_assistant, analyst | all three |
 | RAG corpora | docs | docs, lottery_history | docs, lottery_history, user_data (all users), ops_logs |
-| Write tools | none | save_numbers | save_numbers, trigger_scraper |
-| Read tools | generate_form, get_statistics, analyze | + list_saved_numbers | + query_audit_log, read_token_usage |
-| HITL | never (no write tools) | on save_numbers | on save_numbers, trigger_scraper |
+| Write tools | none | save_numbers | save_numbers, trigger_scraper, edit_file |
+| Read tools | generate_form, get_statistics, analyze | + list_saved_numbers | + query_audit_log, read_token_usage, search_web, read_code, list_files |
+| HITL | never (no write tools) | on save_numbers | on save_numbers, trigger_scraper, edit_file |
 | Daily budget | $0 (no limit) | $5.00 | $0 (no limit — owner) |
 | Recursion limit | 6 | 25 | 50 |
 

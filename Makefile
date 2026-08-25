@@ -39,3 +39,10 @@ test-unit:
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .pytest_cache .uv
+
+# ── Ingest product docs into RAG ─────────────────────────────
+ingest-docs:
+	.venv/bin/python -m app.rag.ingest
+
+ingest-docs-force:
+	.venv/bin/python -m app.rag.ingest --force
