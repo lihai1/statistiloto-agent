@@ -22,6 +22,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DOCS_DIR = Path(__file__).parent / "docs_source"
+EXAMPLES_DIR = Path(__file__).parent / "examples_source"
 CHUNK_SIZE = 500  # characters per chunk (approximate)
 CHUNK_OVERLAP = 50  # overlap between chunks for context continuity
 
@@ -59,6 +60,24 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP)
 def _content_hash(text: str) -> str:
     """Stable hash of chunk content for dedup."""
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _extract_title(text: str) -> str:
+    """Extract the first H1 markdown title from text, or empty string."""
+    for line in text.split("\n"):
+        line = line.strip()
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def _make_chunk_header(source_file: str, title: str) -> str:
+    """Build a short header prepended to each chunk for better embedding context.
+
+    Format: [source: hot-cold.md] Hot and Cold Numbers
+    """
+    title_part = f" {title}" if title else ""
+    return f"[source: {source_file}]{title_part}\n"
 
 
 def _get_existing_hashes(corpus: str = "docs") -> set[str]:
@@ -117,7 +136,11 @@ def ingest_docs(force: bool = False, docs_dir: Path | None = None) -> dict:
     for md_file in md_files:
         file_names.append(md_file.name)
         text = md_file.read_text(encoding="utf-8")
-        chunks = _chunk_text(text)
+        title = _extract_title(text)
+        header = _make_chunk_header(md_file.name, title)
+        raw_chunks = _chunk_text(text)
+        # Prepend the source header to each chunk for better embedding context.
+        chunks = [header + c for c in raw_chunks]
         total_chunks += len(chunks)
 
         # Embed all chunks for this file at once
@@ -134,6 +157,7 @@ def ingest_docs(force: bool = False, docs_dir: Path | None = None) -> dict:
                 continue
             metadata = {
                 "source": md_file.name,
+                "title": title,
                 "content_hash": chash,
                 "chunk_index": total_chunks - len(chunks) + chunks.index(chunk),
             }
@@ -154,11 +178,182 @@ def ingest_docs(force: bool = False, docs_dir: Path | None = None) -> dict:
     }
 
 
+def _format_example_chunk(pair: dict) -> str | None:
+    """Format a single Q&A example pair into retrievable text.
+
+    Supports optional fields used by the language-separated corpus:
+      lang      — language code (en/he) — included as a metadata label
+      context   — structured UI context dict — rendered as key=value lines
+      approval  — "approved" / "rejected" — marks HITL flow examples
+      final     — expected post-approval response (used with `approval`)
+
+    Returns None if the pair is missing required user/assistant fields.
+    """
+    user_msg = (pair.get("user") or "").strip()
+    assistant_msg = (pair.get("assistant") or "").strip()
+    if not user_msg or not assistant_msg:
+        return None
+
+    parts: list[str] = []
+
+    lang = (pair.get("lang") or "").strip()
+    if lang:
+        parts.append(f"Language: {lang}")
+
+    ctx = pair.get("context")
+    if isinstance(ctx, dict) and ctx:
+        ctx_parts = [f"{k}={v}" for k, v in ctx.items()]
+        parts.append("Context: " + ", ".join(ctx_parts))
+
+    approval = (pair.get("approval") or "").strip()
+    if approval:
+        parts.append(f"Approval: {approval}")
+
+    parts.append(f"User: {user_msg}")
+    parts.append(f"Assistant: {assistant_msg}")
+
+    final_msg = (pair.get("final") or "").strip()
+    if final_msg:
+        parts.append(f"Final: {final_msg}")
+
+    return "\n".join(parts)
+
+
+def _discover_example_files(source_dir: Path) -> list[Path]:
+    """Discover YAML example files under source_dir.
+
+    Supports two layouts:
+      1. Flat:    source_dir/*.yaml                  (legacy)
+      2. Lang:    source_dir/<lang>/*.yaml           (current)
+
+    The language-separated layout is preferred. Files are returned sorted
+    by relative path for deterministic ingestion order.
+    """
+    # Recursive glob for any .yaml file under source_dir (covers both layouts).
+    return sorted(source_dir.rglob("*.yaml"))
+
+
+def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> dict:
+    """Ingest Q&A example pairs from YAML files into the 'examples' corpus.
+
+    Each YAML file contains a list of example records. Each record becomes
+    a single chunk formatted as:
+
+        [Language: <lang>]
+        [Context: key=value, ...]
+        [Approval: approved|rejected]
+        User: <question>
+        Assistant: <expected response or TOOL: line>
+        [Final: <post-approval response>]
+
+    The corpus is organized under language subdirectories (en/, he/) so
+    retrieval can be filtered by user language. Legacy flat-layout files
+    at the source root are still supported.
+
+    This corpus gives the LLM few-shot context at retrieval time — when a
+    user asks a similar question, the retrieved example shows the expected
+    response style, tool selection, argument format, and approval-flow
+    behavior. This reduces LLM reasoning load and improves determinism.
+
+    Args:
+        force: if True, clear the examples corpus first and re-index everything.
+        examples_dir: override the examples directory (for testing).
+
+    Returns:
+        {"indexed": N, "skipped": N, "total_pairs": N, "files": [...]}
+    """
+    import yaml
+    from app.rag.retriever import _get_embeddings_model as get_embeddings_model
+    from app.rag.indexers import index_document, clear_corpus
+
+    source_dir = examples_dir or EXAMPLES_DIR
+    if not source_dir.exists():
+        log.warning("Examples source directory not found: %s", source_dir)
+        return {"indexed": 0, "skipped": 0, "total_pairs": 0, "files": []}
+
+    if force:
+        log.info("Clearing examples corpus for full re-index")
+        clear_corpus("examples")
+
+    existing = _get_existing_hashes("examples") if not force else set()
+    embeddings = get_embeddings_model()
+
+    yaml_files = _discover_example_files(source_dir)
+    indexed = 0
+    skipped = 0
+    total_pairs = 0
+    file_names = []
+
+    for yml_file in yaml_files:
+        rel_name = str(yml_file.relative_to(source_dir))
+        file_names.append(rel_name)
+        with open(yml_file, encoding="utf-8") as f:
+            pairs = yaml.safe_load(f)
+        if not isinstance(pairs, list):
+            log.warning("Skipping %s: expected a YAML list", rel_name)
+            continue
+
+        # Build chunk text for each example pair, preserving language,
+        # context, and approval-flow metadata.
+        chunks: list[str] = []
+        chunk_langs: list[str] = []
+        for pair in pairs:
+            if not isinstance(pair, dict):
+                continue
+            chunk = _format_example_chunk(pair)
+            if chunk is None:
+                continue
+            chunks.append(chunk)
+            chunk_langs.append((pair.get("lang") or "").strip())
+
+        total_pairs += len(chunks)
+        if not chunks:
+            continue
+
+        try:
+            vectors = embeddings.embed_documents(chunks)
+        except Exception as e:
+            log.error("Failed to embed examples for %s: %s", rel_name, e)
+            continue
+
+        for chunk, vector, lang in zip(chunks, vectors, chunk_langs):
+            chash = _content_hash(chunk)
+            if chash in existing:
+                skipped += 1
+                continue
+            metadata = {
+                "source": rel_name,
+                "content_hash": chash,
+                "type": "qa_example",
+            }
+            if lang:
+                metadata["lang"] = lang
+            try:
+                index_document("examples", chunk, metadata, vector)
+                indexed += 1
+                existing.add(chash)
+            except Exception as e:
+                log.error("Failed to index example from %s: %s", rel_name, e)
+
+    log.info("Examples ingestion complete: indexed=%d skipped=%d total_pairs=%d files=%d",
+             indexed, skipped, total_pairs, len(yaml_files))
+    return {
+        "indexed": indexed,
+        "skipped": skipped,
+        "total_pairs": total_pairs,
+        "files": file_names,
+    }
+
+
 if __name__ == "__main__":
     import argparse
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="Ingest product docs into RAG")
-    parser.add_argument("--force", action="store_true", help="Clear and re-index all docs")
+    parser = argparse.ArgumentParser(description="Ingest product docs and examples into RAG")
+    parser.add_argument("--force", action="store_true", help="Clear and re-index everything")
+    parser.add_argument("--examples-only", action="store_true", help="Only ingest examples, not docs")
     args = parser.parse_args()
-    result = ingest_docs(force=args.force)
-    print(f"Done: {result}")
+    results = {}
+    if not args.examples_only:
+        results["docs"] = ingest_docs(force=args.force)
+    results["examples"] = ingest_examples(force=args.force)
+    print(f"Done: {results}")

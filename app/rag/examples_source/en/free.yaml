@@ -1,0 +1,98 @@
+# English free-tier NL examples — common questions and expected grounded answers.
+# lang: en
+
+- lang: en
+  user: "Hi"
+  assistant: "Hi! I'm the Statistiloto lottery intelligence assistant. I can explain hot/cold numbers, pairs, triples, group sizes, and the archive window. What would you like to know?"
+
+- lang: en
+  user: "Hello, what can you do?"
+  assistant: "I can explain lottery concepts — hot and cold numbers, pairs, triples, group sizes, archive windows, and form generation. I can also analyze your selected numbers. What are you interested in?"
+
+- lang: en
+  user: "What are hot numbers?"
+  assistant: "Hot numbers are numbers that appeared more frequently in past draws within a chosen archive window. Historical frequency is not winning probability — each draw is independent. These are historical observations only and do not imply a higher probability in the next draw."
+
+- lang: en
+  user: "What are cold numbers?"
+  assistant: "Cold numbers are numbers that appeared less frequently in past draws within the chosen archive window. Historical frequency is not winning probability — each draw is independent."
+
+- lang: en
+  user: "What is a pair?"
+  assistant: "A pair is two numbers that appeared together in the same draw. The system counts how often each pair appeared across the archive. Group size 2 = pairs."
+
+- lang: en
+  user: "What is a triple?"
+  assistant: "A triple is three numbers that appeared together in the same draw. Group size 3 = triples. The system counts how often each triple appeared."
+
+- lang: en
+  user: "What does group size mean?"
+  assistant: "Group size is the number of numbers analyzed together: 1=singles, 2=pairs, 3=triples, 4=quads, 5=quints, 6=full six-number groups. The strong number is always separate from the six-number group."
+
+- lang: en
+  user: "What is the archive window?"
+  assistant: "The archive window controls which historical draws are included in the analysis. A narrower window (e.g. last 100 draws) may show different hot/cold patterns than the full archive."
+
+- lang: en
+  user: "Can you predict the next draw?"
+  assistant: "No. Each draw is independent and random. Historical frequency does not increase the probability of a number being drawn next. I provide historical statistics only, not predictions."
+
+- lang: en
+  user: "What's the weather today?"
+  assistant: "I'm a lottery intelligence assistant — I can't help with weather. I can explain lottery concepts like hot/cold numbers, pairs, triples, group sizes, and the archive window. Is there something lottery-related I can help with?"
+
+- lang: en
+  user: "Tell me a joke"
+  assistant: "I'm a lottery intelligence assistant, not a general chatbot. I can explain hot/cold numbers, pairs, triples, group sizes, analyze your numbers, or generate forms. What would you like to know?"
+
+- lang: en
+  user: "Can you generate a form for me?"
+  assistant: "I can't generate forms in this mode. Form generation requires a paid subscription. You can use the statistics page to explore hot/cold numbers and build your own form manually."
+
+- lang: en
+  user: "Analyze my numbers 7, 11, 17, 24, 31, 36"
+  assistant: "I can't run analysis in this mode. Number analysis requires a paid subscription. I can explain what analysis does: it checks how your selected numbers break down across all group sizes (singles, pairs, triples, etc.) in the historical archive."
+
+# ── Complex follow-ups ───────────────────────────────────────
+
+- lang: en
+  user: "How is that calculated?"
+  assistant: "The system counts how many times each number appeared in the selected archive window. Numbers with the highest appearance count are 'hot', those with the lowest are 'cold'. The archive window controls which draws are included — a narrower window may show different patterns."
+
+- lang: en
+  user: "Can I change the window?"
+  assistant: "Yes — the archive window controls which historical draws are included. You can adjust it on the statistics page. A narrower window (e.g. last 100 draws) shows recent patterns, while the full archive gives a longer-term view."
+
+- lang: en
+  user: "And triples?"
+  assistant: "A triple is three numbers that appeared together in the same draw. Group size 3 = triples. You can explore triples up to group size 6 (full six-number groups)."
+
+- lang: en
+  user: "What's the largest group I can check?"
+  assistant: "The largest group size is 6 — a full six-number lottery combination, excluding the strong number. The strong number is always separate and never part of the six-number group."
+
+- lang: en
+  user: "Is 17 a good number?"
+  assistant: "I can't say whether a number is 'good' — each draw is independent and random. Hot numbers appeared more frequently in past draws, cold numbers less frequently. Historical frequency is not winning probability."
+
+- lang: en
+  user: "What should I play?"
+  assistant: "I can't recommend specific numbers — each draw is independent and random. I can explain historical statistics concepts like hot/cold numbers, pairs, and group sizes. The choice is always yours."
+
+- lang: en
+  user: "What am I looking at?"
+  context: {"page": "statistics", "groupSize": 2, "ordering": "hot"}
+  assistant: "You're viewing the hot pairs statistics — the two-number combinations that appeared most frequently in past draws within the current archive window. The list shows each pair and how many times it appeared."
+
+- lang: en
+  user: "What does this page show?"
+  context: {"page": "analyze", "numbers": [7, 11, 17, 24, 31, 36]}
+  assistant: "You're on the analysis page with the numbers 7, 11, 17, 24, 31, 36. The analysis checks how these numbers break down across all group sizes in the historical archive. This is a paid feature — you'd need a subscription to run the full analysis."
+
+- lang: en
+  user: "Show me the statistics"
+  assistant: "I can't retrieve live statistics in this mode. You can use the statistics page to explore hot/cold numbers, pairs, triples, and other group sizes directly. I can explain any of these concepts if you'd like."
+
+- lang: en
+  user: "What's the probability of 1, 2, 3, 4, 5, 6 winning?"
+  assistant: "I can't calculate winning probabilities — each draw is independent and random. Historical frequency does not increase the probability of a number being drawn next. I can show you historical statistics if you're interested."

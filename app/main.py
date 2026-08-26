@@ -19,13 +19,14 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.config.settings import get_settings
-from app.llm.config_store import get_llm_store, set_llm_store, LLMConfigStore
+from app.llm.config_store import get_llm_store, set_llm_store, LLMConfigStore, LLMConfig, build_llm
+from app.llm.router import set_llm_override, reset_llm_override
 from app.security import validate_jwt, require_admin, TokenClaims, JWTError
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,8 @@ class ChatRequest(BaseModel):
     message: str
     intent: str | None = None
     context: dict | None = None  # structured UI context (page, numbers, groupSize, etc.)
+    config_id: int | None = None  # admin-only: override the active LLM for this request
+    lang: str | None = None  # user language code ("en" | "he"); filters examples corpus
 
 
 class ApproveRequest(BaseModel):
@@ -114,6 +117,35 @@ async def startup():
     log.info("Agent service started (LLM provider=%s model=%s)",
              store.get_config().provider, store.get_config().model)
 
+    # Auto-ingest RAG corpora (docs + examples) on startup.
+    # Runs in a background thread so the HTTP server starts immediately.
+    # Fault-tolerant: failures are logged but never block startup —
+    # admin can retry via POST /reindex once Ollama is ready.
+    if s.rag.auto_ingest:
+        import asyncio
+        asyncio.create_task(_run_startup_ingestion())
+
+
+async def _run_startup_ingestion():
+    """Ingest docs + examples in a background thread on startup.
+
+    Uses asyncio.to_thread because the ingestion code is synchronous
+    (psycopg pool + Ollama embeddings client). Failures are logged but
+    never crash the agent — the admin /reindex endpoint can retry.
+    """
+    import asyncio
+    from app.rag.ingest import ingest_docs, ingest_examples
+    try:
+        docs_result = await asyncio.to_thread(ingest_docs)
+        log.info("[startup] docs ingestion: %s", docs_result)
+    except Exception as e:
+        log.warning("[startup] docs ingestion failed (retry via /reindex): %s", e)
+    try:
+        examples_result = await asyncio.to_thread(ingest_examples)
+        log.info("[startup] examples ingestion: %s", examples_result)
+    except Exception as e:
+        log.warning("[startup] examples ingestion failed (retry via /reindex): %s", e)
+
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -129,6 +161,30 @@ async def health():
     return {"status": "ok"}
 
 
+def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
+    """Read a single llm_config row by id from the DB. Returns None if not found."""
+    from app.rag.store import get_pool
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                "FROM agent.llm_config WHERE id = %s",
+                (config_id,),
+            ).fetchone()
+            if row:
+                return LLMConfig(
+                    provider=row[0],
+                    model=row[1],
+                    base_url=row[2] or "",
+                    api_key=row[3] or "",
+                    request_timeout_seconds=row[4] or 300,
+                )
+    except Exception as e:
+        log.warning("[chat] Failed to read config_id=%s: %s", config_id, e)
+    return None
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest, authorization: str = Header(...)):
     """Process a chat message. Returns JSON with response or paused status.
@@ -136,6 +192,10 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
     Uses sync graph.invoke() because PostgresSaver doesn't implement
     async checkpoint methods in this version of langgraph-checkpoint-postgres.
     The sync invoke runs in a thread pool via asyncio.to_thread.
+
+    Admin users can pass ``config_id`` to override the active LLM for this
+    single request. The override is scoped to the request via a ContextVar
+    that propagates into the graph's thread.
     """
     try:
         claims = validate_jwt(authorization)
@@ -145,62 +205,90 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
 
     log.info("[chat] START user=%s tier=%s session=%s intent=%s", claims.sub, claims.tier, req.session_id, req.intent)
 
-    graph = get_graph()
-    thread_id = f"{claims.sub}:{req.session_id}"
-    # Pass recursion_limit from tier config — caps graph super-steps to prevent infinite loops.
-    from app.config.settings import get_tier_config
-    tier_cfg = get_tier_config(claims.tier)
-    config = {
-        "configurable": {"thread_id": thread_id},
-        "recursion_limit": tier_cfg.recursion_limit,
-    }
-
-    # Read conversation history from the previous checkpoint (if any).
-    # The checkpointer persists state per thread_id across requests, so
-    # the agent can remember prior turns within the same session.
-    try:
-        prev_state = graph.get_state(config)
-        history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
-    except Exception:
-        history = []
-
-    log.info("[chat] History loaded user=%s session=%s history_len=%d", claims.sub, req.session_id, len(history))
-
-    state = {
-        "user_sub": claims.sub,
-        "tier": claims.tier,
-        "session_id": req.session_id,
-        "message": req.message,
-        "intent": req.intent,
-        "jwt_token": claims.raw_token,
-        "history": history,
-        "context": req.context,
-    }
-
-    import asyncio
-
-    def _run_graph():
-        return graph.invoke(state, config)
+    # Admin-only: build a per-request LLM override from the specified config_id.
+    override_token = None
+    if req.config_id is not None:
+        if claims.tier != "admin":
+            log.warning("[chat] Non-admin user=%s attempted config_id override — ignored", claims.sub)
+        else:
+            cfg = _read_llm_config_by_id(req.config_id)
+            if cfg is None:
+                raise HTTPException(status_code=404, detail=f"LLM config {req.config_id} not found")
+            try:
+                override_llm = build_llm(cfg)
+                override_token = set_llm_override(override_llm)
+                log.info("[chat] LLM override config_id=%s provider=%s model=%s", req.config_id, cfg.provider, cfg.model)
+            except Exception as e:
+                log.warning("[chat] Failed to build override LLM config_id=%s: %s — using global", req.config_id, e)
 
     try:
-        result = await asyncio.to_thread(_run_graph)
-    except Exception as e:
-        log.error("[chat] Graph invoke ERROR user=%s session=%s msg=%s", claims.sub, req.session_id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        graph = get_graph()
+        thread_id = f"{claims.sub}:{req.session_id}"
+        # Pass recursion_limit from tier config — caps graph super-steps to prevent infinite loops.
+        from app.config.settings import get_tier_config
+        tier_cfg = get_tier_config(claims.tier)
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": tier_cfg.recursion_limit,
+        }
 
-    # Check if the graph paused for HITL (interrupt).
-    # LangGraph stores interrupt info in the state under __interrupt__.
-    if isinstance(result, dict) and "__interrupt__" in result:
-        log.info("[chat] PAUSED for HITL user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
-        # Record the session even when paused — the user message counts as a turn.
+        # Read conversation history from the previous checkpoint (if any).
+        # The checkpointer persists state per thread_id across requests, so
+        # the agent can remember prior turns within the same session.
+        try:
+            prev_state = graph.get_state(config)
+            history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
+        except Exception:
+            history = []
+
+        log.info("[chat] History loaded user=%s session=%s history_len=%d", claims.sub, req.session_id, len(history))
+
+        state = {
+            "user_sub": claims.sub,
+            "tier": claims.tier,
+            "session_id": req.session_id,
+            "message": req.message,
+            "intent": req.intent,
+            "jwt_token": claims.raw_token,
+            "history": history,
+            "context": req.context,
+            "lang": (req.lang or "").strip().lower() or None,
+        }
+
+        import asyncio
+
+        def _run_graph():
+            return graph.invoke(state, config)
+
+        try:
+            result = await asyncio.to_thread(_run_graph)
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            log.error("[chat] Graph invoke ERROR user=%s session=%s type=%s msg=%s",
+                      claims.sub, req.session_id, error_type, error_msg, exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Agent error: {error_type}: {error_msg}",
+            )
+
+        # Check if the graph paused for HITL (interrupt).
+        # LangGraph stores interrupt info in the state under __interrupt__.
+        if isinstance(result, dict) and "__interrupt__" in result:
+            log.info("[chat] PAUSED for HITL user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
+            # Record the session even when paused — the user message counts as a turn.
+            _record_session(claims, req, history)
+            return {"paused": True, "thread_id": thread_id}
+
+        response = result.get("response") if isinstance(result, dict) else None
+        log.info("[chat] SUCCESS user=%s session=%s response_len=%d", claims.sub, req.session_id, len(response) if response else 0)
+        # Record/update the session metadata so it appears in history.
         _record_session(claims, req, history)
-        return {"paused": True, "thread_id": thread_id}
-
-    response = result.get("response") if isinstance(result, dict) else None
-    log.info("[chat] SUCCESS user=%s session=%s response_len=%d", claims.sub, req.session_id, len(response) if response else 0)
-    # Record/update the session metadata so it appears in history.
-    _record_session(claims, req, history)
-    return {"response": response, "thread_id": thread_id}
+        return {"response": response, "thread_id": thread_id}
+    finally:
+        # Always clear the override, even on error.
+        if override_token is not None:
+            reset_llm_override(override_token)
 
 
 def _record_session(claims, req, prior_history) -> None:
@@ -250,8 +338,14 @@ async def approve(req: ApproveRequest, authorization: str = Header(...)):
     try:
         result = await asyncio.to_thread(_resume_graph)
     except Exception as e:
-        log.error("[approve] Resume ERROR user=%s session=%s msg=%s", claims.sub, req.session_id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        error_type = type(e).__name__
+        error_msg = str(e)
+        log.error("[approve] Resume ERROR user=%s session=%s type=%s msg=%s",
+                  claims.sub, req.session_id, error_type, error_msg, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent error: {error_type}: {error_msg}",
+        )
 
     response = result.get("response") if isinstance(result, dict) else None
     log.info("[approve] SUCCESS user=%s session=%s approved=%s response_len=%d", claims.sub, req.session_id, req.approved, len(response) if response else 0)
@@ -382,6 +476,48 @@ async def create_llm_config(req: LLMConfigRequest, authorization: str = Header(.
     return {"status": "created", "id": config_id, "name": name}
 
 
+@app.put("/llm-configs/{config_id}")
+async def update_llm_config(config_id: int, req: LLMConfigRequest, authorization: str = Header(...)):
+    """Update an existing saved LLM config by id (admin only).
+
+    Does not change activation status. If the updated config is the active
+    one, the LLM is hot-reloaded with the new values.
+    """
+    try:
+        claims = validate_jwt(authorization)
+        require_admin(claims)
+    except JWTError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    from app.rag.store import get_pool
+    import time
+    timeout = req.request_timeout_seconds or 300
+    name = req.name or f"{req.provider}/{req.model}"
+    pool = get_pool()
+    with pool.connection() as conn:
+        row = conn.execute(
+            """UPDATE agent.llm_config
+                   SET name = %s, provider = %s, model = %s, base_url = %s,
+                       api_key = %s, request_timeout_seconds = %s,
+                       updated_by = %s, updated_at = %s
+                 WHERE id = %s RETURNING id, is_active""",
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, claims.sub, time.time(), config_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
+        was_active = row[1]
+
+    # Hot-reload if the updated config is the active one.
+    if was_active:
+        try:
+            get_llm_store().force_refresh()
+            log.info("[llm-configs.update] config_id=%s was active — LLM hot-reloaded", config_id)
+        except Exception as e:
+            log.warning("[llm-configs.update] hot-reload failed: %s", e)
+
+    return {"status": "updated", "id": config_id, "name": name}
+
+
 @app.put("/llm-configs/{config_id}/activate")
 async def activate_llm_config(config_id: int, authorization: str = Header(...)):
     """Activate a saved LLM config by id (admin only). Hot-reloads the LLM."""
@@ -506,10 +642,11 @@ async def get_audit_log(authorization: str = Header(...), limit: int = 50):
 
 @app.post("/reindex")
 async def reindex_docs(authorization: str = Header(...)):
-    """Reindex product docs into the RAG 'docs' corpus (admin only).
+    """Reindex product docs AND examples into RAG corpora (admin only).
 
-    Reads markdown files from app/rag/docs_source/, embeds them, and inserts
-    into agent.embeddings. Content-hash dedup skips unchanged chunks.
+    Reads markdown from app/rag/docs_source/ into the 'docs' corpus and
+    YAML examples from app/rag/examples_source/<lang>/ into the 'examples'
+    corpus. Content-hash dedup skips unchanged chunks.
     """
     try:
         claims = validate_jwt(authorization)
@@ -517,11 +654,13 @@ async def reindex_docs(authorization: str = Header(...)):
     except JWTError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    from app.rag.ingest import ingest_docs
+    from app.rag.ingest import ingest_docs, ingest_examples
     try:
-        result = ingest_docs()
-        log.info("[reindex] admin=%s result=%s", claims.sub, result)
-        return {"status": "ok", **result}
+        docs_result = ingest_docs()
+        examples_result = ingest_examples()
+        log.info("[reindex] admin=%s docs=%s examples=%s",
+                 claims.sub, docs_result, examples_result)
+        return {"status": "ok", "docs": docs_result, "examples": examples_result}
     except Exception as e:
         log.error("[reindex] failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Reindex failed: {e}")
@@ -562,12 +701,28 @@ _ANTHROPIC_MODELS = [
 
 
 @app.get("/llm-models")
-async def list_llm_models(provider: str, authorization: str = Header(...)):
+async def list_llm_models(
+    provider: str,
+    authorization: str = Header(...),
+    base_url: str | None = Query(None),
+):
     """List available models for a provider (admin only).
 
-    For Ollama, queries the live Ollama server's /api/tags endpoint using
-    the base_url from the current LLM config (or the `base_url` query param).
-    For Gemini, OpenAI, and Anthropic, returns a static list of known models.
+    For Ollama, queries the live Ollama server's /api/tags endpoint.
+    The base URL is resolved in priority order:
+      1. the ``base_url`` query param (sent by the UI from the form field),
+      2. the active LLM config's ``base_url``,
+      3. the default ``http://ollama:11434``.
+    This ensures Ollama models are fetched from the correct server even when
+    a non-Ollama config is currently active.
+    For Gemini, OpenAI, and Anthropic, returns a static list of known models
+    with an empty ``capabilities`` array (capabilities are not surfaced for
+    non-Ollama providers).
+
+    Response shape::
+
+        {"provider": "ollama",
+         "models": [{"name": "llama3.1:8b", "size": 4661214619, "capabilities": ["tools"]}, ...]}
     """
     try:
         claims = validate_jwt(authorization)
@@ -576,31 +731,62 @@ async def list_llm_models(provider: str, authorization: str = Header(...)):
         raise HTTPException(status_code=403, detail=str(e))
 
     if provider == "ollama":
-        return {"provider": "ollama", "models": await _list_ollama_models(authorization)}
+        return {"provider": "ollama", "models": await _list_ollama_models(base_url)}
     if provider == "gemini":
-        return {"provider": "gemini", "models": list(_GEMINI_MODELS)}
+        return {"provider": "gemini", "models": [{"name": m, "size": 0, "capabilities": []} for m in _GEMINI_MODELS]}
     if provider == "openai":
-        return {"provider": "openai", "models": list(_OPENAI_MODELS)}
+        return {"provider": "openai", "models": [{"name": m, "size": 0, "capabilities": []} for m in _OPENAI_MODELS]}
     if provider == "anthropic":
-        return {"provider": "anthropic", "models": list(_ANTHROPIC_MODELS)}
+        return {"provider": "anthropic", "models": [{"name": m, "size": 0, "capabilities": []} for m in _ANTHROPIC_MODELS]}
     if provider == "mock":
-        return {"provider": "mock", "models": ["fake-list"]}
+        return {"provider": "mock", "models": [{"name": "fake-list", "size": 0, "capabilities": []}]}
     raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
 
-async def _list_ollama_models(authorization: str) -> list[str]:
-    """Query the Ollama server for installed models via /api/tags."""
+def _parse_ollama_tags(data: dict) -> list[dict]:
+    """Parse Ollama ``/api/tags`` JSON into ``[{name, size, capabilities}]``.
+
+    Pure helper (no I/O) so it can be unit-tested without a live Ollama.
+    The ``capabilities`` array is taken verbatim from Ollama's response
+    (Ollama >= 0.30.0 reports it on ``/api/tags``); older servers that omit
+    it get an empty list per model. ``size`` is the model size in bytes
+    (0 when absent) — surfaced so the UI can show it greyed-out next to
+    the model name.
+    """
+    models = []
+    for m in data.get("models", []):
+        name = m.get("name", "") or m.get("model", "")
+        if not name:
+            continue
+        caps = m.get("capabilities")
+        if not isinstance(caps, list):
+            caps = []
+        try:
+            size = int(m.get("size", 0) or 0)
+        except (TypeError, ValueError):
+            size = 0
+        models.append({"name": name, "size": size, "capabilities": [str(c) for c in caps]})
+    return models
+
+
+async def _list_ollama_models(base_url: str | None = None) -> list[dict]:
+    """Query the Ollama server for installed models via /api/tags.
+
+    ``base_url`` resolution priority:
+      1. the explicit ``base_url`` argument (from the UI form),
+      2. the active LLM config's ``base_url``,
+      3. the default ``http://ollama:11434``.
+    """
     import httpx
-    cfg = get_llm_store().get_config()
-    base_url = cfg.base_url or "http://ollama:11434"
+    if not base_url:
+        cfg = get_llm_store().get_config()
+        base_url = cfg.base_url or "http://ollama:11434"
     base_url = base_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{base_url}/api/tags")
             resp.raise_for_status()
-            data = resp.json()
-            models = [m.get("name", "") for m in data.get("models", [])]
-            return [m for m in models if m]
+            return _parse_ollama_tags(resp.json())
     except Exception as e:
         log.warning("[llm-models] Failed to query Ollama at %s: %s", base_url, e)
         return []

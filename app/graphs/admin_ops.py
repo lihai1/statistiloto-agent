@@ -41,6 +41,7 @@ class AdminOpsState(TypedDict):
     tool_args: Optional[dict]
     tool_result: Optional[dict]
     response: Optional[str]
+    draft: Optional[str]
 
 
 def _extract_app_path(text: str) -> str | None:
@@ -100,6 +101,12 @@ def plan_action(state: AdminOpsState) -> dict:
             f"  Output: TOOL: list_files ARGS: {{\"directory\": \"app/tools\"}}\n\n"
             f"  Admin request: Replace the welcome text in app/main.py.\n"
             f"  Output: TOOL: edit_file ARGS: {{\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}}\n\n"
+            f"  Admin request: Show me the users.\n"
+            f"  Output: TOOL: query_db ARGS: {{\"sql\": \"SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier\", \"limit\": 50}}\n\n"
+            f"  Admin request: What tables are in the agent schema?\n"
+            f"  Output: TOOL: list_db_tables ARGS: {{\"schema\": \"agent\"}}\n\n"
+            f"  Admin request: Show me the chat sessions.\n"
+            f"  Output: TOOL: query_db ARGS: {{\"sql\": \"SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC\", \"limit\": 50}}\n\n"
             f"Rules:\n"
             f"  - 'token usage' or 'costs' or 'billing' -> read_token_usage\n"
             f"  - 'audit' or 'logs' -> query_audit_log\n"
@@ -107,7 +114,11 @@ def plan_action(state: AdminOpsState) -> dict:
             f"  - 'search the web' or 'look up' or 'find online' -> search_web\n"
             f"  - 'show me' or 'read' or 'view' a file -> read_code\n"
             f"  - 'list files' or 'files in' -> list_files\n"
-            f"  - 'edit' or 'replace' or 'change' a file -> edit_file\n\n"
+            f"  - 'edit' or 'replace' or 'change' a file -> edit_file\n"
+            f"  - 'users' or 'who is using' -> query_db (SELECT DISTINCT user_sub, tier FROM agent.token_usage)\n"
+            f"  - 'tables in' or 'schema' -> list_db_tables\n"
+            f"  - 'chat sessions' or 'sessions' -> query_db (SELECT * FROM agent.chat_sessions)\n"
+            f"  - 'saved numbers' or 'saved forms' -> query_db (SELECT * FROM agent.embeddings WHERE corpus='user_data')\n\n"
             f"If the request does not match any tool, output: TOOL: none"
         )
         resp = llm.invoke(prompt)
@@ -129,6 +140,18 @@ def plan_action(state: AdminOpsState) -> dict:
             expected = ("search_web", {
                 "query": tool_args.get("query", state["message"].strip()),
                 "limit": tool_args.get("limit", 5),
+            })
+        elif any(k in message_lower for k in ("tables in", "schema", "what tables")):
+            expected = ("list_db_tables", {"schema": tool_args.get("schema", "agent")})
+        elif any(k in message_lower for k in ("show me the users", "who is using", "list users", "show users", "all users")):
+            expected = ("query_db", {
+                "sql": "SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier",
+                "limit": tool_args.get("limit", 50),
+            })
+        elif any(k in message_lower for k in ("chat sessions", "show sessions", "list sessions", "active sessions")):
+            expected = ("query_db", {
+                "sql": "SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC",
+                "limit": tool_args.get("limit", 50),
             })
         else:
             app_path = _extract_app_path(state["message"])
@@ -160,6 +183,7 @@ def plan_action(state: AdminOpsState) -> dict:
 
         log.info("[admin_ops.plan] SUCCESS user=%s session=%s planned_tool=%s", user_sub, session_id, planned_tool)
         return {
+            "draft": content,
             "planned_tool": planned_tool,
             "tool_args": tool_args,
             "tool_result": {"planned_action": content},
@@ -171,7 +195,7 @@ def plan_action(state: AdminOpsState) -> dict:
         raise
 
 
-maybe_hitl = make_hitl_gate("admin_ops", execute_node="execute")
+maybe_hitl = make_hitl_gate("admin_ops", execute_node="execute", finalize_node="finalize")
 
 
 def execute(state: AdminOpsState) -> dict:
@@ -222,19 +246,89 @@ def execute(state: AdminOpsState) -> dict:
                 new_string=tool_args.get("new_string"),
                 content=tool_args.get("content"),
             )
+        elif planned_tool == "list_db_tables":
+            result = admin_ops.list_db_tables(
+                claims, schema=tool_args.get("schema", "agent"),
+            )
+        elif planned_tool == "query_db":
+            result = admin_ops.query_db(
+                claims,
+                sql=tool_args.get("sql", ""),
+                limit=tool_args.get("limit", 50),
+            )
         else:
             result = {"status": "unknown_action", "message": f"Unknown tool: {planned_tool}"}
 
-        # Serialize as JSON (not Python repr) so the Angular UI can JSON.parse it.
-        import json
-        response_str = json.dumps(result, default=str)
-
-        updated_history = append_history(state, response_str)
         log.info("[admin_ops.execute] SUCCESS user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
-        return {"tool_result": result, "response": response_str, "history": updated_history}
+        return {"tool_result": result}
     except Exception as e:
         log.error("[admin_ops.execute] ERROR user=%s session=%s tool=%s msg=%s", user_sub, session_id, planned_tool, e, exc_info=True)
         raise
+
+
+@meter_llm
+def finalize(state: AdminOpsState) -> dict:
+    """Transform the tool result into readable natural language.
+
+    Like the analyst's finalize, this invokes the LLM to format the structured
+    tool result into concise NL per the system prompt's grounding rules.
+    Falls back to a plain summary if the LLM call fails.
+    """
+    user_sub = state["user_sub"]
+    session_id = state["session_id"]
+    tool_result = state.get("tool_result")
+    planned_tool = state.get("planned_tool")
+
+    # No tool was planned — use the draft or a simple fallback.
+    if not planned_tool or planned_tool == "none":
+        draft = state.get("draft", "")
+        if draft and not draft.strip().upper().startswith("TOOL:"):
+            response = draft
+        else:
+            response = "No admin action needed."
+        updated_history = append_history(state, response)
+        return {"response": response, "history": updated_history}
+
+    # A tool was executed — format the result into NL.
+    if not tool_result:
+        response = "Operation completed."
+        updated_history = append_history(state, response)
+        return {"response": response, "history": updated_history}
+
+    try:
+        llm = get_llm()
+        hist = format_history(state.get("history", []))
+        import json
+        prompt = (
+            f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
+            f"You are the owner admin. Summarize the following admin operation result "
+            f"into a concise, readable response for the admin user.\n\n"
+            f"{hist}"
+            f"Admin request: {state['message']}\n\n"
+            f"Tool: {planned_tool}\n"
+            f"Tool result (JSON):\n{json.dumps(tool_result, default=str, ensure_ascii=False, indent=2)}\n\n"
+            f"Transform this into a concise natural language summary. "
+            f"Do NOT dump raw JSON. If the result is a list, show the key items. "
+            f"If it's an error, say so clearly."
+        )
+        resp = llm.invoke(prompt)
+        response = resp.content if hasattr(resp, "content") else str(resp)
+    except Exception as e:
+        log.error("[admin_ops.finalize] LLM formatting failed: %s — using summary", e)
+        # Fallback: brief summary instead of raw JSON
+        if isinstance(tool_result, dict):
+            if "entries" in tool_result:
+                response = f"Found {len(tool_result['entries'])} entries."
+            elif "status" in tool_result:
+                response = f"Operation status: {tool_result['status']}."
+            else:
+                response = f"Operation completed. {list(tool_result.keys())}"
+        else:
+            response = "Operation completed."
+
+    updated_history = append_history(state, response)
+    log.info("[admin_ops.finalize] SUCCESS user=%s session=%s response_len=%d", user_sub, session_id, len(response))
+    return {"response": response, "history": updated_history}
 
 
 def build_admin_ops_graph():
@@ -244,9 +338,11 @@ def build_admin_ops_graph():
     g.add_node("plan", plan_action)
     g.add_node("hitl_gate", maybe_hitl)
     g.add_node("execute", execute)
+    g.add_node("finalize", finalize)
 
     g.add_edge(START, "retrieve")
     g.add_edge("retrieve", "plan")
     g.add_edge("plan", "hitl_gate")
-    g.add_edge("execute", END)
+    g.add_edge("execute", "finalize")
+    g.add_edge("finalize", END)
     return g.compile()

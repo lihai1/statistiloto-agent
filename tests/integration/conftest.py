@@ -10,20 +10,25 @@ import os
 import sys
 import time
 import json
+import logging
 from pathlib import Path
 
 import psycopg
 import pytest
 
+log = logging.getLogger(__name__)
+
 # Set test env vars BEFORE importing app modules.
-os.environ["JWT_VERIFY"] = "false"
-os.environ["LLM_MOCK"] = "true"
-os.environ["LLM_PROVIDER"] = "ollama"
-os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
-os.environ["OLLAMA_MODEL"] = "llama3.1:8b"
-os.environ["DB_URI"] = "postgresql://postgres:postgres@localhost:5433/statistiloto"
-os.environ["LOTTERY_GRPC_HOST"] = ""  # no Go service in tests
-os.environ["BFF_BASE_URL"] = ""       # no Java BFF in tests
+# NOTE: OLLAMA_MODEL is intentionally NOT set here — the e2e_llm fixture
+# auto-discovers it from the provider's /api/tags endpoint. For mock-based
+# tests the model value is irrelevant (FakeListChatModel ignores it).
+os.environ.setdefault("JWT_VERIFY", "false")
+os.environ.setdefault("LLM_MOCK", "true")
+os.environ.setdefault("LLM_PROVIDER", "ollama")
+os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")
+os.environ.setdefault("DB_URI", "postgresql://postgres:postgres@localhost:5433/statistiloto")
+os.environ.setdefault("LOTTERY_GRPC_HOST", "")  # no Go service in tests
+os.environ.setdefault("BFF_BASE_URL", "")       # no Java BFF in tests
 
 # Ensure app is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -85,9 +90,78 @@ def inject_pool(db_pool):
 
 # ── LLM mock ─────────────────────────────────────────────────
 
+def _discover_ollama_model(base_url: str) -> str:
+    """Query Ollama /api/tags and pick the smallest available chat model.
+
+    Prefers models with 'tools' capability, then falls back to the smallest
+    model by size. Skips embedding-only models.
+    """
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/tags", timeout=5) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return "qwen2.5:0.5b"  # fallback
+
+    models = []
+    for m in data.get("models", []):
+        name = m.get("name", "") or m.get("model", "")
+        if not name:
+            continue
+        caps = m.get("capabilities") or []
+        # Skip embedding-only models.
+        if caps and "embedding" in caps and "completion" not in caps and "tools" not in caps:
+            continue
+        size = m.get("size", 0) or 0
+        models.append((name, size, caps))
+
+    if not models:
+        return "qwen2.5:0.5b"
+
+    # Prefer models with 'tools' capability (needed for analyst/admin flows).
+    tools_models = [m for m in models if "tools" in m[2]]
+    if tools_models:
+        # Pick the smallest tools-capable model for speed.
+        tools_models.sort(key=lambda m: m[1] or float("inf"))
+        return tools_models[0][0]
+
+    # Otherwise pick the smallest model.
+    models.sort(key=lambda m: m[1] or float("inf"))
+    return models[0][0]
+
+
 @pytest.fixture(autouse=True, scope="function")
-def mock_llm_store(db_pool):
-    """Inject a mock LLM config store using FakeListChatModel."""
+def mock_llm_store(request, db_pool):
+    """Inject an LLM config store.
+
+    For regular integration tests: uses FakeListChatModel (mock).
+    For e2e_llm-marked tests: uses a real Ollama LLM instance, with the
+    model auto-discovered from the provider's /api/tags endpoint.
+    """
+    # e2e_llm tests use a real Ollama LLM instead of the mock.
+    if request.node.get_closest_marker("e2e_llm"):
+        from app.llm.config_store import build_llm, LLMConfig
+        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        # Auto-discover the model from Ollama, unless explicitly overridden.
+        model = os.environ.get("OLLAMA_MODEL")
+        if not model:
+            model = _discover_ollama_model(ollama_url)
+            log.info("[conftest] Auto-discovered Ollama model: %s", model)
+        store = LLMConfigStore(
+            poll_seconds=999,
+            pg_pool=db_pool,
+            mock_responses=None,
+        )
+        store._cfg = LLMConfig(provider="ollama", model=model, base_url=ollama_url)
+        store._llm = build_llm(store._cfg)
+        set_llm_store(store)
+        yield store
+        store.stop_poller()
+        set_llm_store(None)
+        return
+
+    # Default: mock LLM
     store = LLMConfigStore(
         poll_seconds=999,  # don't poll during tests
         pg_pool=db_pool,
@@ -137,12 +211,51 @@ class MockEmbeddings:
 
 
 @pytest.fixture(autouse=True, scope="function")
-def mock_embeddings():
-    """Inject a mock embeddings model so RAG doesn't need Ollama."""
+def mock_embeddings(request):
+    """Inject an embeddings model.
+
+    For regular integration tests: uses MockEmbeddings (hash-based, no Ollama).
+    For e2e_llm-marked tests: uses real OllamaEmbeddings (nomic-embed-text)
+    so retrieval quality is testable.
+
+    Yields the model instance so tests that need to compute embeddings
+    for direct DB insertion can use it.
+    """
     from app.rag.retriever import set_embeddings_model, reset_embeddings_model
-    set_embeddings_model(MockEmbeddings())
-    yield
+
+    if request.node.get_closest_marker("e2e_llm"):
+        from langchain_ollama import OllamaEmbeddings
+        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        model = OllamaEmbeddings(model="nomic-embed-text", base_url=ollama_url)
+        log.info("[conftest] Using real OllamaEmbeddings (nomic-embed-text)")
+    else:
+        model = MockEmbeddings()
+
+    set_embeddings_model(model)
+    yield model
     reset_embeddings_model()
+
+
+@pytest.fixture(autouse=True, scope="function")
+def ingest_real_docs(request, mock_embeddings, inject_pool, clean_db):
+    """Ingest product docs into the 'docs' corpus before each e2e_llm test.
+
+    Uses the real embeddings model (from mock_embeddings fixture) so chunks
+    are embedded with nomic-embed-text and retrieval quality is realistic.
+    For non-e2e_llm tests, this is a no-op (mock tests don't need docs).
+
+    Depends on inject_pool and clean_db so the DB pool is ready and clean
+    before ingestion.
+    """
+    if not request.node.get_closest_marker("e2e_llm"):
+        yield
+        return
+
+    from app.rag.ingest import ingest_docs, ingest_examples
+    docs_result = ingest_docs(force=True)
+    examples_result = ingest_examples(force=True)
+    log.info("[conftest] Ingested docs=%s examples=%s for e2e_llm test", docs_result, examples_result)
+    yield
 
 
 @pytest.fixture(autouse=True, scope="function")

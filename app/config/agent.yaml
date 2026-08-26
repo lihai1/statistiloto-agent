@@ -26,6 +26,7 @@ tiers:
       - analyze
     rag_corpora:
       - docs
+      - examples
     daily_budget_usd: 0.0       # Ollama is free; 0 = no limit
   paid:
     recursion_limit: 25
@@ -37,6 +38,7 @@ tiers:
       - list_saved_numbers
     rag_corpora:
       - docs
+      - examples
       - lottery_history
     daily_budget_usd: 5.0
   admin:
@@ -54,8 +56,11 @@ tiers:
       - read_code               # read agent source code
       - list_files              # list agent source files
       - edit_file               # write tool → HITL triggers automatically
+      - list_db_tables          # list tables in a DB schema
+      - query_db                # read-only SQL query (admin only)
     rag_corpora:
       - docs
+      - examples
       - lottery_history
       - user_data               # admin sees ALL users' data (user_sub filter bypassed)
       - ops_logs

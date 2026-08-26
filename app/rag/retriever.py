@@ -52,6 +52,7 @@ def retrieve(
     tier: str = "free",
     top_k: int | None = None,
     embedding: list[float] | None = None,
+    lang: str | None = None,
 ) -> list[dict]:
     """Retrieve relevant chunks from the specified corpora.
 
@@ -62,6 +63,11 @@ def retrieve(
         tier: the user's tier — admin bypasses user_sub filter on user_data.
         top_k: number of results (default from config).
         embedding: pre-computed embedding vector (for testing without Ollama).
+        lang: user language code ("en" | "he"). When set, the 'examples'
+            corpus is filtered to chunks whose metadata->>'lang' matches,
+            so a Hebrew user only retrieves Hebrew few-shot examples and
+            an English user only retrieves English ones. Other corpora
+            (docs, lottery_history) are language-agnostic and unaffected.
 
     Returns:
         List of {text, metadata, distance} dicts.
@@ -75,6 +81,7 @@ def retrieve(
         embedding = emb_model.embed_query(query)
 
     pool = get_pool()
+    lang = (lang or "").strip().lower() or None
 
     # CRITICAL: user_data is ALWAYS filtered by user_sub from the JWT.
     # EXCEPTION: admin (owner/developer) can see ALL users' user_data.
@@ -100,15 +107,56 @@ def retrieve(
                     (str(embedding), user_sub, top_k),
                 ).fetchall()
     else:
-        with pool.connection() as conn:
-            rows = conn.execute(
-                """SELECT content, metadata, embedding <=> %s::vector AS dist
-                   FROM agent.embeddings
-                   WHERE corpus = ANY(%s)
-                     AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
-                   ORDER BY dist LIMIT %s""",
-                (str(embedding), corpora, user_sub, top_k),
-            ).fetchall()
+        # Non-user_data corpora (docs, examples, lottery_history, ops_logs).
+        # When lang is set and the 'examples' corpus is in scope, split the
+        # query: fetch language-tagged examples for the requested lang, and
+        # fetch all other corpora without a lang filter. This keeps docs and
+        # lottery_history language-agnostic while ensuring few-shot examples
+        # match the user's language.
+        examples_corpora = [c for c in corpora if c == "examples"]
+        other_corpora = [c for c in corpora if c != "examples"]
+
+        rows = []
+        if examples_corpora and lang:
+            with pool.connection() as conn:
+                ex_rows = conn.execute(
+                    """SELECT content, metadata, embedding <=> %s::vector AS dist
+                       FROM agent.embeddings
+                       WHERE corpus = 'examples'
+                         AND metadata->>'lang' = %s
+                         AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
+                       ORDER BY dist LIMIT %s""",
+                    (str(embedding), lang, user_sub, top_k),
+                ).fetchall()
+                rows.extend(ex_rows)
+        elif examples_corpora:
+            # No lang filter — return all examples (back-compat).
+            with pool.connection() as conn:
+                ex_rows = conn.execute(
+                    """SELECT content, metadata, embedding <=> %s::vector AS dist
+                       FROM agent.embeddings
+                       WHERE corpus = 'examples'
+                         AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
+                       ORDER BY dist LIMIT %s""",
+                    (str(embedding), user_sub, top_k),
+                ).fetchall()
+                rows.extend(ex_rows)
+
+        if other_corpora:
+            with pool.connection() as conn:
+                other_rows = conn.execute(
+                    """SELECT content, metadata, embedding <=> %s::vector AS dist
+                       FROM agent.embeddings
+                       WHERE corpus = ANY(%s)
+                         AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
+                       ORDER BY dist LIMIT %s""",
+                    (str(embedding), other_corpora, user_sub, top_k),
+                ).fetchall()
+                rows.extend(other_rows)
+
+        # Re-sort merged rows by distance and re-apply top_k.
+        rows.sort(key=lambda r: float(r[2]))
+        rows = rows[:top_k]
 
     import json
     return [

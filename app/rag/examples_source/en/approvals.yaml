@@ -1,0 +1,115 @@
+# English approval flow examples — HITL (human-in-the-loop) operations.
+# These teach the LLM the expected behavior for write tools that require approval.
+#
+# Flow: user requests a write operation → LLM emits TOOL: line → graph pauses
+# for HITL → user approves or rejects → agent responds accordingly.
+#
+# Fields:
+#   user:        the initial user request
+#   assistant:   the TOOL: line the LLM should emit (draft step)
+#   approval:    "approved" or "rejected" — what the user chose
+#   final:       the expected response after approval/rejection is processed
+#   lang:        language code
+
+# ── save_numbers: approved ───────────────────────────────────
+
+- lang: en
+  user: "Save the numbers 1, 2, 3, 4, 5, 6 as my lucky pick"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
+  approval: "approved"
+  final: "Saved your lucky numbers: 1, 2, 3, 4, 5, 6. You can view them anytime from your saved numbers."
+
+- lang: en
+  user: "Save 7, 11, 17, 24, 31, 36 as favorites"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
+  approval: "approved"
+  final: "Saved your favorites: 7, 11, 17, 24, 31, 36."
+
+- lang: en
+  user: "Keep these numbers 5, 12, 23, 34, 38, 42"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [5, 12, 23, 34, 38, 42]}"
+  approval: "approved"
+  final: "Saved your numbers: 5, 12, 23, 34, 38, 42."
+
+- lang: en
+  user: "Save those as my favorites"
+  context: {"page": "analyze", "numbers": [7, 11, 17, 24, 31, 36]}
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
+  approval: "approved"
+  final: "Saved your favorites: 7, 11, 17, 24, 31, 36."
+
+# ── save_numbers: rejected ───────────────────────────────────
+
+- lang: en
+  user: "Save 1, 2, 3, 4, 5, 6 as lucky"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
+  approval: "rejected"
+  final: "The save was cancelled. Your numbers were not saved. Would you like to try again with a different set?"
+
+- lang: en
+  user: "Save 9, 14, 21, 28, 35, 42"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [9, 14, 21, 28, 35, 42]}"
+  approval: "rejected"
+  final: "Save cancelled. The numbers 9, 14, 21, 28, 35, 42 were not stored."
+
+# ── trigger_scraper: approved ────────────────────────────────
+
+- lang: en
+  user: "Run the scraper"
+  assistant: "TOOL: trigger_scraper ARGS: {}"
+  approval: "approved"
+  final: "Scraper triggered successfully. The lottery draw data will be refreshed shortly. You can check the audit log for completion status."
+
+- lang: en
+  user: "Refresh the draw data"
+  assistant: "TOOL: trigger_scraper ARGS: {}"
+  approval: "approved"
+  final: "Scraper triggered. New draw data will be available once the scrape completes."
+
+# ── trigger_scraper: rejected ────────────────────────────────
+
+- lang: en
+  user: "Run the scraper"
+  assistant: "TOOL: trigger_scraper ARGS: {}"
+  approval: "rejected"
+  final: "Scraper trigger cancelled. The draw data was not refreshed."
+
+# ── edit_file: approved ──────────────────────────────────────
+
+- lang: en
+  user: "Edit app/main.py and replace hello with hi"
+  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}"
+  approval: "approved"
+  final: "File app/main.py updated successfully. Replaced 'hello' with 'hi'."
+
+# ── edit_file: rejected ──────────────────────────────────────
+
+- lang: en
+  user: "Edit app/main.py and replace hello with hi"
+  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}"
+  approval: "rejected"
+  final: "File edit cancelled. app/main.py was not modified."
+
+- lang: en
+  user: "Replace the welcome text in app/prompts.py"
+  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/prompts.py\", \"old_string\": \"welcome\", \"new_string\": \"hello\"}"
+  approval: "rejected"
+  final: "Edit rejected. app/prompts.py was not changed."
+
+# ── Approval conversation flow (multi-turn) ──────────────────
+
+- lang: en
+  user: "Save 3, 7, 15, 22, 29, 37 as my lucky numbers"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [3, 7, 15, 22, 29, 37]}"
+  approval: "approved"
+  final: "Saved your lucky numbers: 3, 7, 15, 22, 29, 37."
+
+- lang: en
+  user: "Now save 1, 2, 3, 4, 5, 6 as well"
+  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
+  approval: "rejected"
+  final: "Save cancelled for 1, 2, 3, 4, 5, 6. Your previous lucky numbers are still saved."
+
+- lang: en
+  user: "Show me what I have saved"
+  assistant: "TOOL: list_saved_numbers ARGS: {}"

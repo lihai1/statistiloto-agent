@@ -117,3 +117,112 @@ class TestRAGRetrieval:
             embedding=embedding,
         )
         assert any("Draw 1234" in r["text"] for r in paid_results)
+
+    def test_examples_filtered_by_lang(self, db_pool):
+        """Examples corpus is filtered by metadata->>'lang' when lang is set.
+
+        Indexes one English and one Hebrew example with the same embedding,
+        then verifies that lang='he' only returns the Hebrew example and
+        lang='en' only returns the English one. Without lang, both are
+        returned (back-compat).
+        """
+        from app.rag.indexers import index_document, clear_corpus
+        from app.rag.retriever import retrieve
+
+        embedding = [0.7] + [0.0] * 767
+        clear_corpus("examples")
+        try:
+            index_document(
+                "examples",
+                "Language: en\nUser: Show me hot pairs\nAssistant: TOOL: get_statistics ARGS: {}",
+                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example"},
+                embedding,
+            )
+            index_document(
+                "examples",
+                "Language: he\nUser: הצג לי זוגות חמים\nAssistant: TOOL: get_statistics ARGS: {}",
+                {"source": "he/paid.yaml", "lang": "he", "type": "qa_example"},
+                embedding,
+            )
+
+            # Hebrew user — only Hebrew examples.
+            he_results = retrieve(
+                query="זוגות חמים",
+                corpora=["examples"],
+                user_sub="test-user",
+                tier="paid",
+                embedding=embedding,
+                lang="he",
+            )
+            assert len(he_results) >= 1
+            assert all(r["metadata"].get("lang") == "he" for r in he_results), (
+                f"Hebrew query returned non-he examples: {[r['metadata'].get('lang') for r in he_results]}"
+            )
+            assert any("he" in r["text"].lower() or "זוגות" in r["text"] for r in he_results)
+
+            # English user — only English examples.
+            en_results = retrieve(
+                query="hot pairs",
+                corpora=["examples"],
+                user_sub="test-user",
+                tier="paid",
+                embedding=embedding,
+                lang="en",
+            )
+            assert len(en_results) >= 1
+            assert all(r["metadata"].get("lang") == "en" for r in en_results), (
+                f"English query returned non-en examples: {[r['metadata'].get('lang') for r in en_results]}"
+            )
+            assert any("hot pairs" in r["text"] for r in en_results)
+
+            # No lang filter — both returned (back-compat).
+            all_results = retrieve(
+                query="pairs",
+                corpora=["examples"],
+                user_sub="test-user",
+                tier="paid",
+                embedding=embedding,
+            )
+            langs = {r["metadata"].get("lang") for r in all_results}
+            assert "en" in langs and "he" in langs, (
+                f"Without lang filter, expected both en and he, got: {langs}"
+            )
+        finally:
+            clear_corpus("examples")
+
+    def test_lang_filter_does_not_affect_docs(self, db_pool):
+        """The lang filter only applies to the 'examples' corpus — docs
+        remain language-agnostic and are returned regardless of lang."""
+        from app.rag.indexers import index_document, clear_corpus
+        from app.rag.retriever import retrieve
+
+        embedding = [0.6] + [0.0] * 767
+        clear_corpus("examples")
+        try:
+            index_document(
+                "examples",
+                "Language: en\nUser: hot pairs\nAssistant: TOOL: get_statistics ARGS: {}",
+                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example"},
+                embedding,
+            )
+            index_document("docs", "Hot and cold numbers documentation", {}, embedding)
+
+            # Hebrew user querying docs + examples — should get the doc
+            # (no lang filter on docs) but NOT the English example.
+            results = retrieve(
+                query="hot numbers",
+                corpora=["docs", "examples"],
+                user_sub="test-user",
+                tier="paid",
+                embedding=embedding,
+                lang="he",
+            )
+            # Docs returned (lang-agnostic).
+            assert any("Hot and cold" in r["text"] for r in results), "docs should be returned regardless of lang"
+            # English example NOT returned (lang=he filters it out).
+            example_results = [r for r in results if r["metadata"].get("type") == "qa_example"]
+            assert len(example_results) == 0, (
+                f"Hebrew user should not get English examples, got: {example_results}"
+            )
+        finally:
+            clear_corpus("examples")

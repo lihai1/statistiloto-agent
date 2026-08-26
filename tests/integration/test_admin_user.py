@@ -198,3 +198,71 @@ class TestAdminAuditLog:
         assert row is not None
         assert row[0] == "admin-user-001"
         assert row[1] == "trigger_scraper"
+
+
+class TestAdminDbTools:
+    """Test the generic DB inspection tools (list_db_tables, query_db)."""
+
+    def test_list_db_tables_agent_schema(self, db_pool):
+        """list_db_tables returns tables for the agent schema."""
+        from app.security import TokenClaims
+        from app.tools.admin_ops import list_db_tables
+
+        claims = TokenClaims(sub="admin-user-001", tier="admin", roles=[], raw_token="")
+        tables = list_db_tables(claims, schema="agent")
+        table_names = [t["table"] for t in tables]
+        assert "audit_log" in table_names
+        assert "chat_sessions" in table_names
+        assert "token_usage" in table_names
+        # Each table should have columns
+        audit = [t for t in tables if t["table"] == "audit_log"][0]
+        col_names = [c["column"] for c in audit["columns"]]
+        assert "user_sub" in col_names
+        assert "action" in col_names
+
+    def test_query_db_select(self, db_pool):
+        """query_db executes a read-only SELECT and returns rows."""
+        from app.security import TokenClaims
+        from app.tools.admin_ops import query_db
+
+        claims = TokenClaims(sub="admin-user-001", tier="admin", roles=[], raw_token="")
+        # Insert a test row first
+        with db_pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO agent.audit_log (user_sub, tier, action, details, ts) "
+                "VALUES ('test-query-db', 'admin', 'test_action', '{}', 0)"
+            )
+        rows = query_db(claims, sql="SELECT user_sub, action FROM agent.audit_log WHERE user_sub = 'test-query-db'")
+        assert len(rows) == 1
+        assert rows[0]["user_sub"] == "test-query-db"
+        assert rows[0]["action"] == "test_action"
+
+    def test_query_db_rejects_write(self, db_pool):
+        """query_db rejects non-SELECT statements."""
+        from app.security import TokenClaims
+        from app.tools.admin_ops import query_db
+        import pytest as _pytest
+
+        claims = TokenClaims(sub="admin-user-001", tier="admin", roles=[], raw_token="")
+        with _pytest.raises(ValueError, match="Only SELECT"):
+            query_db(claims, sql="INSERT INTO agent.audit_log VALUES (1)")
+
+    def test_query_db_rejects_drop(self, db_pool):
+        """query_db rejects DROP statements even with SELECT prefix."""
+        from app.security import TokenClaims
+        from app.tools.admin_ops import query_db
+        import pytest as _pytest
+
+        claims = TokenClaims(sub="admin-user-001", tier="admin", roles=[], raw_token="")
+        with _pytest.raises(ValueError, match="drop"):
+            query_db(claims, sql="SELECT 1; DROP TABLE agent.audit_log")
+
+    def test_query_db_non_admin_rejected(self, db_pool):
+        """Non-admin users cannot use query_db."""
+        from app.security import TokenClaims
+        from app.tools.admin_ops import query_db
+        import pytest as _pytest
+
+        claims = TokenClaims(sub="free-user-001", tier="free", roles=[], raw_token="")
+        with _pytest.raises(Exception):
+            query_db(claims, sql="SELECT 1")

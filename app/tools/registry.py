@@ -25,6 +25,8 @@ READ_TOOLS = frozenset({
     "search_web",         # public web search (admin only)
     "read_code",          # read agent source code (admin only)
     "list_files",         # list agent source files (admin only)
+    "list_db_tables",     # DB SELECT → list tables in a schema (admin only)
+    "query_db",           # DB SELECT → read-only SQL query (admin only)
 })
 
 # Union of all known tools.

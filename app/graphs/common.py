@@ -70,7 +70,8 @@ def make_retrieve_node(log_prefix: str) -> Callable[[dict], dict]:
         user_sub = state["user_sub"]
         tier = state["tier"]
         session_id = state["session_id"]
-        log.info("[%s.retrieve] START user=%s tier=%s session=%s", log_prefix, user_sub, tier, session_id)
+        lang = state.get("lang")
+        log.info("[%s.retrieve] START user=%s tier=%s session=%s lang=%s", log_prefix, user_sub, tier, session_id, lang)
         try:
             cfg = get_tier_config(tier)
             chunks = retrieve(
@@ -78,6 +79,7 @@ def make_retrieve_node(log_prefix: str) -> Callable[[dict], dict]:
                 corpora=cfg.rag_corpora,
                 user_sub=user_sub,
                 tier=tier,
+                lang=lang,
             )
             log.info("[%s.retrieve] SUCCESS user=%s session=%s chunks=%d", log_prefix, user_sub, session_id, len(chunks))
             return {"chunks": chunks}

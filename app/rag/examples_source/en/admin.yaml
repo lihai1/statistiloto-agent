@@ -1,0 +1,128 @@
+# English admin-tier examples — admin tool-calling + complex DB inspection.
+# lang: en
+
+# ── Basic admin tools ────────────────────────────────────────
+
+- lang: en
+  user: "Show me the audit logs"
+  assistant: "TOOL: query_audit_log ARGS: {\"limit\": 50}"
+
+- lang: en
+  user: "Show me token usage"
+  assistant: "TOOL: read_token_usage ARGS: {\"days\": 7}"
+
+- lang: en
+  user: "What are the LLM costs?"
+  assistant: "TOOL: read_token_usage ARGS: {\"days\": 7}"
+
+- lang: en
+  user: "Show me the users"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier\", \"limit\": 50}"
+
+- lang: en
+  user: "Show me the chat sessions"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC\", \"limit\": 50}"
+
+- lang: en
+  user: "What tables are in the agent schema?"
+  assistant: "TOOL: list_db_tables ARGS: {\"schema\": \"agent\"}"
+
+- lang: en
+  user: "Run the scraper"
+  assistant: "TOOL: trigger_scraper ARGS: {}"
+
+- lang: en
+  user: "Search the web for lottery regulation changes"
+  assistant: "TOOL: search_web ARGS: {\"query\": \"lottery regulation changes 2025\", \"limit\": 5}"
+
+- lang: en
+  user: "Show me app/main.py"
+  assistant: "TOOL: read_code ARGS: {\"file_path\": \"app/main.py\"}"
+
+- lang: en
+  user: "List files in app/tools"
+  assistant: "TOOL: list_files ARGS: {\"directory\": \"app/tools\"}"
+
+- lang: en
+  user: "What can you do?"
+  assistant: "I'm the admin assistant. I can query audit logs, read token usage, list users, inspect DB tables and records, trigger the scraper, search the web, read and edit agent source code, and perform all lottery intelligence operations. What do you need?"
+
+# ── Complex DB inspection ────────────────────────────────────
+
+- lang: en
+  user: "How many messages has each user sent?"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, COUNT(*) AS sessions, SUM(message_count) AS total_messages FROM agent.chat_sessions GROUP BY user_sub ORDER BY total_messages DESC\", \"limit\": 50}"
+
+- lang: en
+  user: "Show me the most active sessions"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY message_count DESC LIMIT 20\", \"limit\": 20}"
+
+- lang: en
+  user: "What's in the embeddings table?"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT corpus, COUNT(*) AS chunks FROM agent.embeddings GROUP BY corpus ORDER BY corpus\", \"limit\": 50}"
+
+- lang: en
+  user: "Show me the LLM configs"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT id, name, provider, model, is_active, updated_by, updated_at FROM agent.llm_config ORDER BY id\", \"limit\": 50}"
+
+- lang: en
+  user: "Show me only the admin actions"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, action, details, ts FROM agent.audit_log WHERE tier = 'admin' ORDER BY ts DESC LIMIT 50\", \"limit\": 50}"
+
+- lang: en
+  user: "Show me token usage by model"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT model, SUM(prompt_tokens) AS prompt, SUM(completion_tokens) AS completion, SUM(cost_usd) AS cost, COUNT(*) AS calls FROM agent.token_usage GROUP BY model ORDER BY cost DESC\", \"limit\": 50}"
+
+- lang: en
+  user: "Who is costing the most?"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, tier, SUM(cost_usd) AS total_cost, COUNT(*) AS calls FROM agent.token_usage GROUP BY user_sub, tier ORDER BY total_cost DESC LIMIT 20\", \"limit\": 20}"
+
+- lang: en
+  user: "What schemas exist?"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast') ORDER BY schema_name\", \"limit\": 50}"
+
+- lang: en
+  user: "What columns does chat_sessions have?"
+  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'agent' AND table_name = 'chat_sessions' ORDER BY ordinal_position\", \"limit\": 50}"
+
+# ── Code inspection ──────────────────────────────────────────
+
+- lang: en
+  user: "Show me the supervisor graph"
+  assistant: "TOOL: read_code ARGS: {\"file_path\": \"app/graphs/supervisor.py\"}"
+
+- lang: en
+  user: "Show me the RAG retriever"
+  assistant: "TOOL: read_code ARGS: {\"file_path\": \"app/rag/retriever.py\"}"
+
+- lang: en
+  user: "List the graph files"
+  assistant: "TOOL: list_files ARGS: {\"directory\": \"app/graphs\"}"
+
+# ── Explain vs show me ───────────────────────────────────────
+
+- lang: en
+  user: "What does the audit log contain?"
+  assistant: "The audit log records admin actions — scraper triggers, DB queries, file edits, and other operations. Each entry includes the user, tier, action name, details (JSON), and timestamp. Would you like me to show you the recent entries?"
+
+- lang: en
+  user: "What does token_usage track?"
+  assistant: "The token_usage table logs every LLM call — user, tier, provider, model, prompt tokens, completion tokens, cost in USD, and timestamp. Would you like me to show the current usage?"
+
+- lang: en
+  user: "How does the embeddings table work?"
+  assistant: "The embeddings table stores RAG vectors. Each row has a corpus (docs, examples, lottery_history, user_data), the chunk text, metadata (JSON with source and content hash), and a 768-dim embedding vector. Retrieval uses cosine distance to find the closest chunks."
+
+# ── Refusal / boundary ───────────────────────────────────────
+
+- lang: en
+  user: "Delete all audit logs"
+  assistant: "I can't delete audit logs — that's a destructive operation not exposed through my tools. You would need to run a SQL DELETE directly. Would you like me to show you the current entries instead?"
+
+- lang: en
+  user: "Drop the token_usage table"
+  assistant: "I can't drop tables — my query_db tool is read-only (SELECT only). Would you like me to show you what's in the table instead?"
+
+- lang: en
+  user: "Change the admin password"
+  assistant: "I can't manage user passwords — that's handled by Keycloak, not by the agent. Please use the Keycloak admin console."

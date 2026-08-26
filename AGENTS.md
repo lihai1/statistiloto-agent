@@ -23,10 +23,12 @@ Python LangGraph agent worker with hierarchical multi-agent orchestration (Optio
 ## Tool classification (HITL gating)
 
 Write tools (require human approval before executing):
+
 - `save_numbers` — POST to Java BFF, writes saved numbers to DB
 - `trigger_scraper` — triggers Go scraper, writes lottery draw data
 
 Read-only tools (execute without HITL):
+
 - `generate_form` — Go gRPC, computes forms
 - `get_statistics` — Go gRPC, reads statistics
 - `analyze` — Go gRPC, reads historical matches
@@ -36,6 +38,8 @@ Read-only tools (execute without HITL):
 - `search_web` — DuckDuckGo web search (admin only)
 - `read_code` — read a file from the agent's own source tree (admin only)
 - `list_files` — list files under a directory (admin only)
+- `list_db_tables` — list tables and columns in a DB schema (admin only)
+- `query_db` — read-only SQL SELECT against any schema (admin only)
 
 Classification is in `app/tools/registry.py` — `WRITE_TOOLS` and `READ_TOOLS` frozensets.
 
@@ -46,7 +50,7 @@ Classification is in `app/tools/registry.py` — `WRITE_TOOLS` and `READ_TOOLS` 
 | Workers | nl_assistant only | nl_assistant, analyst | all three |
 | RAG corpora | docs | docs, lottery_history | docs, lottery_history, user_data (all users), ops_logs |
 | Write tools | none | save_numbers | save_numbers, trigger_scraper, edit_file |
-| Read tools | generate_form, get_statistics, analyze | + list_saved_numbers | + query_audit_log, read_token_usage, search_web, read_code, list_files |
+| Read tools | generate_form, get_statistics, analyze | + list_saved_numbers | + query_audit_log, read_token_usage, search_web, read_code, list_files, list_db_tables, query_db |
 | HITL | never (no write tools) | on save_numbers | on save_numbers, trigger_scraper, edit_file |
 | Daily budget | $0 (no limit) | $5.00 | $0 (no limit — owner) |
 | Recursion limit | 6 | 25 | 50 |

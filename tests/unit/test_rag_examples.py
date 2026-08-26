@@ -1,0 +1,205 @@
+"""Unit tests for RAG examples ingestion helpers.
+
+Tests the language-separated corpus layout, optional metadata fields
+(lang, context, approval, final), and chunk formatting — without DB.
+"""
+import yaml
+import pytest
+
+from app.rag.ingest import (
+    _format_example_chunk,
+    _discover_example_files,
+    EXAMPLES_DIR,
+)
+
+
+class TestFormatExampleChunk:
+    def test_minimal_user_assistant(self):
+        pair = {"user": "Hi", "assistant": "Hello"}
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "User: Hi" in chunk
+        assert "Assistant: Hello" in chunk
+        assert "Language:" not in chunk
+        assert "Context:" not in chunk
+        assert "Approval:" not in chunk
+        assert "Final:" not in chunk
+
+    def test_lang_field_included(self):
+        pair = {"lang": "he", "user": "שלום", "assistant": "שלום!"}
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "Language: he" in chunk
+        assert "User: שלום" in chunk
+        assert "Assistant: שלום!" in chunk
+
+    def test_context_field_included(self):
+        pair = {
+            "user": "show me hot pairs",
+            "assistant": "TOOL: get_statistics ARGS: {}",
+            "context": {"page": "statistics", "groupSize": 2, "ordering": "hot"},
+        }
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "Context:" in chunk
+        assert "page=statistics" in chunk
+        assert "groupSize=2" in chunk
+        assert "ordering=hot" in chunk
+
+    def test_approval_flow_fields(self):
+        pair = {
+            "lang": "en",
+            "user": "Save 1,2,3,4,5,6",
+            "assistant": "TOOL: save_numbers ARGS: {\"numbers\": [1,2,3,4,5,6]}",
+            "approval": "approved",
+            "final": "Saved your numbers: 1,2,3,4,5,6.",
+        }
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "Language: en" in chunk
+        assert "Approval: approved" in chunk
+        assert "User: Save 1,2,3,4,5,6" in chunk
+        assert "Assistant: TOOL: save_numbers" in chunk
+        assert "Final: Saved your numbers" in chunk
+
+    def test_rejected_approval(self):
+        pair = {
+            "lang": "he",
+            "user": "שמור 1,2,3",
+            "assistant": "TOOL: save_numbers ARGS: {}",
+            "approval": "rejected",
+            "final": "השמירה בוטלה.",
+        }
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "Approval: rejected" in chunk
+        assert "Final: השמירה בוטלה." in chunk
+
+    def test_missing_user_returns_none(self):
+        assert _format_example_chunk({"assistant": "x"}) is None
+
+    def test_missing_assistant_returns_none(self):
+        assert _format_example_chunk({"user": "x"}) is None
+
+    def test_empty_user_returns_none(self):
+        assert _format_example_chunk({"user": "   ", "assistant": "x"}) is None
+
+    def test_empty_context_dict_omitted(self):
+        pair = {"user": "Hi", "assistant": "Hello", "context": {}}
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "Context:" not in chunk
+
+    def test_non_dict_context_omitted(self):
+        pair = {"user": "Hi", "assistant": "Hello", "context": "not a dict"}
+        chunk = _format_example_chunk(pair)
+        assert chunk is not None
+        assert "Context:" not in chunk
+
+
+class TestDiscoverExampleFiles:
+    def test_discovers_en_and_he_subdirs(self):
+        """The shipped corpus has en/ and he/ subdirectories."""
+        if not EXAMPLES_DIR.exists():
+            pytest.skip("examples_source/ not present in this checkout")
+        files = _discover_example_files(EXAMPLES_DIR)
+        rel = [str(f.relative_to(EXAMPLES_DIR)) for f in files]
+        assert any(p.startswith("en/") for p in rel), f"no en/ files: {rel}"
+        assert any(p.startswith("he/") for p in rel), f"no he/ files: {rel}"
+
+    def test_discovers_recursive_temp_dir(self, tmp_path):
+        """A nested layout is discovered recursively."""
+        (tmp_path / "en").mkdir()
+        (tmp_path / "he").mkdir()
+        (tmp_path / "en" / "free.yaml").write_text("[]", encoding="utf-8")
+        (tmp_path / "en" / "approvals.yaml").write_text("[]", encoding="utf-8")
+        (tmp_path / "he" / "free.yaml").write_text("[]", encoding="utf-8")
+        # Legacy flat file at root should also be discovered.
+        (tmp_path / "legacy.yaml").write_text("[]", encoding="utf-8")
+
+        files = _discover_example_files(tmp_path)
+        rel = sorted(str(f.relative_to(tmp_path)) for f in files)
+        assert rel == [
+            "en/approvals.yaml",
+            "en/free.yaml",
+            "he/free.yaml",
+            "legacy.yaml",
+        ]
+
+    def test_returns_sorted_for_determinism(self, tmp_path):
+        (tmp_path / "z.yaml").write_text("[]", encoding="utf-8")
+        (tmp_path / "a.yaml").write_text("[]", encoding="utf-8")
+        (tmp_path / "m.yaml").write_text("[]", encoding="utf-8")
+        files = _discover_example_files(tmp_path)
+        names = [f.name for f in files]
+        assert names == sorted(names)
+
+    def test_empty_dir_returns_empty(self, tmp_path):
+        assert _discover_example_files(tmp_path) == []
+
+
+class TestShippedCorpusStructure:
+    """Validate the shipped YAML files are well-formed and have lang metadata."""
+
+    @classmethod
+    @pytest.fixture(scope="class")
+    def shipped_files(cls):
+        if not EXAMPLES_DIR.exists():
+            pytest.skip("examples_source/ not present")
+        return _discover_example_files(EXAMPLES_DIR)
+
+    def test_all_files_parse_as_yaml_lists(self, shipped_files):
+        for f in shipped_files:
+            with open(f, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+            assert isinstance(data, list), f"{f.name} is not a YAML list"
+
+    def test_all_examples_have_lang(self, shipped_files):
+        """Every shipped example must declare a language."""
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                assert isinstance(pair, dict), f"{rel}[{i}] not a dict"
+                lang = pair.get("lang")
+                assert lang in {"en", "he"}, f"{rel}[{i}] missing/invalid lang: {lang!r}"
+
+    def test_all_examples_have_user_and_assistant(self, shipped_files):
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                assert pair.get("user"), f"{rel}[{i}] missing user"
+                assert pair.get("assistant"), f"{rel}[{i}] missing assistant"
+
+    def test_lang_matches_folder(self, shipped_files):
+        """Examples in en/ must have lang=en; examples in he/ must have lang=he."""
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            parts = rel.parts
+            if len(parts) < 2:
+                continue  # legacy flat file
+            folder_lang = parts[0]
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                assert pair.get("lang") == folder_lang, (
+                    f"{rel}[{i}] lang={pair.get('lang')!r} but folder={folder_lang}"
+                )
+
+    def test_approval_examples_have_final(self, shipped_files):
+        """Examples with an `approval` field must also have a `final` response."""
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                if pair.get("approval"):
+                    assert pair.get("final"), (
+                        f"{rel}[{i}] has approval={pair['approval']!r} but no final"
+                    )
+                    assert pair["approval"] in {"approved", "rejected"}, (
+                        f"{rel}[{i}] invalid approval: {pair['approval']!r}"
+                    )

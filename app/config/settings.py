@@ -49,6 +49,7 @@ class RAGConfig:
     embedding_model: str = "nomic-embed-text"
     top_k: int = 6
     user_data_scope: str = "by_user_sub"
+    auto_ingest: bool = True  # ingest docs + examples on startup (fault-tolerant)
 
 
 @dataclass
@@ -181,6 +182,7 @@ def _build_settings(data: dict) -> Settings:
         embedding_model=rag_data.get("embedding_model", "nomic-embed-text"),
         top_k=rag_data.get("top_k", 6),
         user_data_scope=rag_data.get("user_data_scope", "by_user_sub"),
+        auto_ingest=rag_data.get("auto_ingest", True),
     )
 
     hitl_data = data.get("hitl", {})

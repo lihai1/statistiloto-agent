@@ -35,6 +35,35 @@ test-integration:
 test-unit:
 	pytest -v -m "not integration"
 
+# ── E2E chat flow tests (real Ollama LLM) ─────────────────────
+# Requires Ollama reachable at OLLAMA_BASE_URL (default: localhost:11434).
+# The model is auto-discovered from the provider's /api/tags endpoint.
+# If Ollama isn't on localhost but the root stack container is running,
+# a temporary socat proxy is started and cleaned up afterward.
+# The DB on port 5433 must already be running (root stack or dev compose).
+OLLAMA_PROXY_NAME ?= ollama-test-proxy
+OLLAMA_NETWORK ?= statistiloto-new_statistiloto-net
+OLLAMA_CONTAINER ?= statistiloto-ollama
+
+test-chat-flows:
+	@URL="http://localhost:11434"; \
+	if curl -s --connect-timeout 2 $$URL/api/tags >/dev/null 2>&1; then \
+		echo "[test-chat-flows] Ollama reachable at $$URL"; \
+	elif docker ps --format '{{.Names}}' | grep -q '^$(OLLAMA_CONTAINER)$$'; then \
+		echo "[test-chat-flows] Proxying to $(OLLAMA_CONTAINER) via socat"; \
+		docker rm -f $(OLLAMA_PROXY_NAME) 2>/dev/null; \
+		docker run -d --name $(OLLAMA_PROXY_NAME) --network $(OLLAMA_NETWORK) \
+			-p 11434:11434 alpine/socat \
+			TCP-LISTEN:11434,fork,reuseaddr TCP:$(OLLAMA_CONTAINER):11434; \
+		for i in $$(seq 1 10); do curl -s --connect-timeout 1 $$URL/api/tags >/dev/null 2>&1 && break; sleep 1; done; \
+		if ! curl -s --connect-timeout 2 $$URL/api/tags >/dev/null 2>&1; then \
+			echo "[test-chat-flows] ERROR: Ollama not reachable"; docker rm -f $(OLLAMA_PROXY_NAME); exit 1; fi; \
+		trap 'docker rm -f $(OLLAMA_PROXY_NAME) 2>/dev/null' EXIT; \
+	else \
+		echo "[test-chat-flows] ERROR: Ollama not found. Start it with: docker compose -f docker-compose-dev.yml up -d ollama"; exit 1; \
+	fi; \
+	OLLAMA_BASE_URL=$$URL .venv/bin/python -m pytest tests/integration/test_chat_flows.py -v --tb=short
+
 # ── Clean ────────────────────────────────────────────────────
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
