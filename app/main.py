@@ -7,6 +7,8 @@ Endpoints:
   GET  /llm-config    — read current global LLM config (any authenticated user)
   PUT  /llm-config    — update global LLM config (admin only, hot-reloaded)
   GET  /llm-models    — list available models for a provider (admin only)
+  GET  /free-llm      — read the free-tier LLM toggle (admin only)
+  PUT  /free-llm      — set the free-tier LLM toggle (admin only)
   GET  /sessions      — list the caller's chat sessions (tier-limited)
   GET  /sessions/{id} — load a session's full message history
   DELETE /sessions/{id} — delete a session and its checkpointer state
@@ -59,6 +61,10 @@ class LLMConfigRequest(BaseModel):
     base_url: str | None = Field(default=None, alias="baseUrl")
     api_key: str | None = Field(default=None, alias="apiKey")
     request_timeout_seconds: int | None = Field(default=None, alias="requestTimeoutSeconds")
+
+
+class FreeLlmToggleRequest(BaseModel):
+    enabled: bool
 
 
 # ── Graph singleton (built lazily) ───────────────────────────
@@ -238,8 +244,11 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
         try:
             prev_state = graph.get_state(config)
             history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
+            # Phase 6: load conversation state for follow-up detection.
+            prev_conv_state = prev_state.values.get("conversation_state") if prev_state and prev_state.values else None
         except Exception:
             history = []
+            prev_conv_state = None
 
         log.info("[chat] History loaded user=%s session=%s history_len=%d", claims.sub, req.session_id, len(history))
 
@@ -253,6 +262,10 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
             "history": history,
             "context": req.context,
             "lang": (req.lang or "").strip().lower() or None,
+            # Client intent is an untrusted hint — logged for audit, never authoritative.
+            "client_intent_hint": req.intent,
+            # Phase 6: pass previous conversation state for follow-up inheritance.
+            "prev_conversation_state": prev_conv_state,
         }
 
         import asyncio
@@ -664,6 +677,52 @@ async def reindex_docs(authorization: str = Header(...)):
     except Exception as e:
         log.error("[reindex] failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Reindex failed: {e}")
+
+
+# ── Free-tier LLM toggle ──────────────────────────────────────
+
+@app.get("/free-llm")
+async def get_free_llm_toggle(authorization: str = Header(...)):
+    """Read the free-tier LLM toggle state (admin only).
+
+    Returns whether free-tier users are currently allowed to invoke the LLM
+    for ambiguous/domain-explanation requests. Default: disabled.
+    """
+    try:
+        claims = validate_jwt(authorization)
+        require_admin(claims)
+    except JWTError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    from app.free_tier_llm import is_free_llm_enabled
+    return {"enabled": is_free_llm_enabled()}
+
+
+@app.put("/free-llm")
+async def set_free_llm_toggle(req: FreeLlmToggleRequest, authorization: str = Header(...)):
+    """Set the free-tier LLM toggle (admin only).
+
+    When enabled, free-tier ambiguous/domain-explanation requests route to
+    the nl_assistant worker and invoke the LLM. When disabled (default), they
+    receive a generic deterministic response with zero LLM calls.
+
+    This toggle is process-scoped (in-memory) and does NOT persist across
+    restarts. Set the FREE_LLM_ENABLED env var for persistent defaults.
+
+    Security: this toggle only controls LLM invocation for ambiguous/domain
+    requests — it does NOT grant free users any additional tools or write
+    access. Authorization remains enforced by CapabilityConfig.
+    """
+    try:
+        claims = validate_jwt(authorization)
+        require_admin(claims)
+    except JWTError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    from app.free_tier_llm import set_free_llm_enabled, is_free_llm_enabled
+    set_free_llm_enabled(req.enabled)
+    log.info("[free-llm] admin=%s set enabled=%s", claims.sub, req.enabled)
+    return {"enabled": is_free_llm_enabled(), "updated_by": claims.sub}
 
 
 # ── LLM model listing ────────────────────────────────────────

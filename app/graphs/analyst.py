@@ -20,10 +20,9 @@ from typing_extensions import TypedDict
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
 from app.metering import meter_llm
-from app.prompts import SYSTEM_PROMPT_WITH_TOOLS
+from app.prompt_builder import build_prompt, format_run_data
 from app.graphs.common import (
     format_history,
-    format_ui_context,
     append_history,
     make_retrieve_node,
     make_hitl_gate,
@@ -42,6 +41,7 @@ class AnalystState(TypedDict):
     chunks: list
     history: list
     context: Optional[dict]           # structured UI context
+    lang: Optional[str]
     draft: Optional[str]
     planned_tool: Optional[str]       # tool name the LLM decided to call
     tool_args: Optional[dict]         # arguments for the planned tool
@@ -66,21 +66,18 @@ def draft_analysis(state: AnalystState) -> dict:
     log.info("[analyst.draft] START user=%s session=%s history_len=%d", user_sub, session_id, hist_len)
     try:
         llm = get_llm()
-        ctx = "\n".join(c["text"] for c in state.get("chunks", []))
         cfg = get_tier_config(state["tier"])
         tools_str = ", ".join(cfg.allowed_tools)
         hist = format_history(state.get("history", []))
-        ui_context = format_ui_context(state.get("context"))
-        prompt = (
-            f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
-            f"Available tools for this user: {tools_str}\n\n"
-            f"Context:\n{ctx}\n\n"
-            f"{ui_context}"
-            f"{hist}"
-            f"Question: {state['message']}\n\n"
-            f"If the user wants you to call a tool, output EXACTLY ONE LINE:\n"
-            f"  TOOL: <tool_name> ARGS: <json_args>\n"
-            f"If no tool is needed, output a plain text analysis only."
+        lang = state.get("lang") or "en"
+
+        # Phase 5: use compact planner prompt.
+        prompt = build_prompt(
+            route="ambiguous_planner",
+            language=lang,
+            user_message=state["message"],
+            authorized_tools=tools_str,
+            history=hist,
         )
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
@@ -142,22 +139,21 @@ def finalize(state: AnalystState) -> dict:
     session_id = state["session_id"]
     draft = state.get("draft", "")
     tool_result = state.get("tool_result")
+    planned_tool = state.get("planned_tool")
+    lang = state.get("lang") or "en"
 
     if tool_result:
         # Invoke the LLM to format the tool result into readable text.
         try:
             llm = get_llm()
             hist = format_history(state.get("history", []))
-            import json
-            prompt = (
-                f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
-                f"{hist}"
-                f"User question: {state['message']}\n\n"
-                f"Tool result (JSON):\n{json.dumps(tool_result, ensure_ascii=False, indent=2)}\n\n"
-                f"Transform this tool result into a concise, readable natural language response. "
-                f"Follow the language, grounding, and formatting rules from the system prompt. "
-                f"Do NOT dump raw JSON. Do NOT fabricate data not in the tool result. "
-                f"If the tool result contains an error, say you couldn't retrieve the data."
+            run_data = format_run_data(planned_tool or "", tool_result)
+            prompt = build_prompt(
+                route="statistics_finalizer",
+                language=lang,
+                user_message=state["message"],
+                run_data=run_data,
+                history=hist,
             )
             resp = llm.invoke(prompt)
             response = resp.content if hasattr(resp, "content") else str(resp)

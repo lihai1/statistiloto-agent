@@ -87,6 +87,14 @@ class LoggingConfig:
 
 
 @dataclass
+class FreeTierConfig:
+    # When False (default), free users receive a generic deterministic response
+    # for ambiguous/domain-explanation requests instead of calling the LLM.
+    # Toggle at runtime via the admin-only PUT /free-llm endpoint.
+    llm_enabled: bool = False
+
+
+@dataclass
 class Settings:
     llm: LLMConfig = field(default_factory=LLMConfig)
     tiers: dict[str, TierConfig] = field(default_factory=dict)
@@ -97,6 +105,7 @@ class Settings:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    free_tier: FreeTierConfig = field(default_factory=FreeTierConfig)
 
 
 def _load_yaml() -> dict:
@@ -147,6 +156,9 @@ def _env_override(data: dict) -> dict:
     # Logging
     if v := os.environ.get("AGENT_LOG_LEVEL"):
         data.setdefault("logging", {})["level"] = v
+    # Free-tier LLM toggle (default: disabled — free users get generic responses)
+    if v := os.environ.get("FREE_LLM_ENABLED"):
+        data.setdefault("free_tier", {})["llm_enabled"] = v.lower() in ("1", "true", "yes")
     return data
 
 
@@ -211,10 +223,13 @@ def _build_settings(data: dict) -> Settings:
     log_data = data.get("logging", {})
     logging_cfg = LoggingConfig(level=log_data.get("level", "INFO"))
 
+    free_tier_data = data.get("free_tier", {})
+    free_tier = FreeTierConfig(llm_enabled=free_tier_data.get("llm_enabled", False))
+
     return Settings(
         llm=llm, tiers=tiers, rag=rag, hitl=hitl,
         lottery_grpc=lottery_grpc, bff=bff, database=database,
-        security=security, logging=logging_cfg,
+        security=security, logging=logging_cfg, free_tier=free_tier,
     )
 
 

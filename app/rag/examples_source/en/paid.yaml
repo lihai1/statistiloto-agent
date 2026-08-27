@@ -4,141 +4,211 @@
 # ── Basic tool calls ─────────────────────────────────────────
 
 - lang: en
-  user: "Show me the hot pairs"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 2, \"strength\": \"hot\"}"
-
+  user: Show me the hot pairs
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 2, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "What are the cold triples?"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 3, \"strength\": \"cold\"}"
-
+  user: What are the cold triples?
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 3, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Top 5 hot numbers"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 5, \"group_size\": 1, \"strength\": \"hot\"}"
-
+  user: Top 5 hot numbers
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 5, "group_size": 1, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Cold quads"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 4, \"strength\": \"cold\"}"
-
+  user: Cold quads
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 4, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Most frequent quints"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 5, \"strength\": \"hot\"}"
-
+  user: Most frequent quints
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 5, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Show me the least common six-number groups"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 6, \"strength\": \"cold\"}"
-
+  user: Show me the least common six-number groups
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 6, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Generate 3 forms for me"
-  assistant: "TOOL: generate_form ARGS: {\"how_many\": 3, \"form_type\": 6, \"strength\": 2}"
-
+  user: Generate 3 forms for me
+  assistant: 'TOOL: generate_form ARGS: {"how_many": 3, "form_type": 6, "strength": 2}'
+  audience: public
+  required_capability: generate_form
 - lang: en
-  user: "Create 5 lucky combinations"
-  assistant: "TOOL: generate_form ARGS: {\"how_many\": 5, \"form_type\": 6, \"strength\": 2}"
-
+  user: Create 5 lucky combinations
+  assistant: 'TOOL: generate_form ARGS: {"how_many": 5, "form_type": 6, "strength": 2}'
+  audience: public
+  required_capability: generate_form
 - lang: en
-  user: "Create a form that includes 7 and 13"
-  assistant: "TOOL: generate_form ARGS: {\"how_many\": 1, \"form_type\": 6, \"will_be\": [7, 13], \"strength\": 2}"
-
+  user: Create a form that includes 7 and 13
+  assistant: 'TOOL: generate_form ARGS: {"how_many": 1, "form_type": 6, "will_be": [7, 13], "strength": 2}'
+  audience: public
+  required_capability: generate_form
 - lang: en
-  user: "Generate 3 forms with 17 as a must-have number"
-  assistant: "TOOL: generate_form ARGS: {\"how_many\": 3, \"form_type\": 6, \"will_be\": [17], \"strength\": 2}"
-
+  user: Generate 3 forms with 17 as a must-have number
+  assistant: 'TOOL: generate_form ARGS: {"how_many": 3, "form_type": 6, "will_be": [17], "strength": 2}'
+  audience: public
+  required_capability: generate_form
 - lang: en
-  user: "Analyze my numbers 7, 11, 17, 24, 31, 36"
-  assistant: "TOOL: analyze ARGS: {\"form\": [7, 11, 17, 24, 31, 36]}"
-
+  user: Analyze my numbers 7, 11, 17, 24, 31, 36
+  assistant: 'TOOL: analyze ARGS: {"form": [7, 11, 17, 24, 31, 36]}'
+  audience: public
+  required_capability: analyze
 - lang: en
-  user: "What stands out in 1, 2, 3, 4, 5, 6?"
-  assistant: "TOOL: analyze ARGS: {\"form\": [1, 2, 3, 4, 5, 6]}"
-
+  user: What stands out in 1, 2, 3, 4, 5, 6?
+  assistant: 'TOOL: analyze ARGS: {"form": [1, 2, 3, 4, 5, 6]}'
+  audience: public
+  required_capability: analyze
 - lang: en
-  user: "Check these: 5 10 15 20 25 30"
-  assistant: "TOOL: analyze ARGS: {\"form\": [5, 10, 15, 20, 25, 30]}"
-
+  user: 'Check these: 5 10 15 20 25 30'
+  assistant: 'TOOL: analyze ARGS: {"form": [5, 10, 15, 20, 25, 30]}'
+  audience: public
+  required_capability: analyze
 - lang: en
-  user: "Analyze 7 11 17 24 31 and 36"
-  assistant: "TOOL: analyze ARGS: {\"form\": [7, 11, 17, 24, 31, 36]}"
-
+  user: Analyze 7 11 17 24 31 and 36
+  assistant: 'TOOL: analyze ARGS: {"form": [7, 11, 17, 24, 31, 36]}'
+  audience: public
+  required_capability: analyze
 - lang: en
-  user: "Show me my saved numbers"
-  assistant: "TOOL: list_saved_numbers ARGS: {}"
-
+  user: Show me my saved numbers
+  assistant: 'TOOL: list_saved_numbers ARGS: {}'
+  audience: public
+  required_capability: list_saved_numbers
 - lang: en
-  user: "What are my saved forms?"
-  assistant: "TOOL: list_saved_numbers ARGS: {}"
-
-# ── Follow-up: change group size from context ────────────────
-
+  user: What are my saved forms?
+  assistant: 'TOOL: list_saved_numbers ARGS: {}'
+  audience: public
+  required_capability: list_saved_numbers
 - lang: en
-  user: "What about cold triples?"
-  context: {"page": "statistics", "groupSize": 2, "ordering": "hot"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 3, \"strength\": \"cold\"}"
-
+  user: What about cold triples?
+  context:
+    page: statistics
+    groupSize: 2
+    ordering: hot
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 3, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "And quads?"
-  context: {"page": "statistics", "groupSize": 3, "ordering": "cold"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 4, \"strength\": \"cold\"}"
-
+  user: And quads?
+  context:
+    page: statistics
+    groupSize: 3
+    ordering: cold
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 4, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Show me the hot ones instead"
-  context: {"page": "statistics", "groupSize": 4, "ordering": "cold"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 4, \"strength\": \"hot\"}"
-
+  user: Show me the hot ones instead
+  context:
+    page: statistics
+    groupSize: 4
+    ordering: cold
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 4, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Now show me singles"
-  context: {"page": "statistics", "groupSize": 4, "ordering": "hot"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 1, \"strength\": \"hot\"}"
-
+  user: Now show me singles
+  context:
+    page: statistics
+    groupSize: 4
+    ordering: hot
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 1, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Show me the opposite"
-  context: {"page": "statistics", "groupSize": 1, "ordering": "hot"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 1, \"strength\": \"cold\"}"
-
-# ── Follow-up: from analysis to save ─────────────────────────
-
+  user: Show me the opposite
+  context:
+    page: statistics
+    groupSize: 1
+    ordering: hot
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 1, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: en
-  user: "Analyze those numbers"
-  context: {"page": "statistics", "groupSize": 2, "ordering": "hot", "numbers": [17, 31]}
-  assistant: "TOOL: analyze ARGS: {\"form\": [17, 31]}"
-
+  user: Analyze those numbers
+  context:
+    page: statistics
+    groupSize: 2
+    ordering: hot
+    numbers:
+    - 17
+    - 31
+  assistant: 'TOOL: analyze ARGS: {"form": [17, 31]}'
+  audience: public
+  required_capability: analyze
 - lang: en
-  user: "Save those as my favorites"
-  context: {"page": "analyze", "numbers": [7, 11, 17, 24, 31, 36]}
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
-
+  user: Save those as my favorites
+  context:
+    page: analyze
+    numbers:
+    - 7
+    - 11
+    - 17
+    - 24
+    - 31
+    - 36
+  assistant: 'TOOL: save_numbers ARGS: {"category": "favorites", "numbers": [7, 11, 17, 24, 31, 36]}'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Keep these numbers"
-  context: {"page": "analyze", "numbers": [5, 12, 23, 34, 38, 42]}
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [5, 12, 23, 34, 38, 42]}"
-
-# ── Explain vs show me (no tool vs tool) ─────────────────────
-
+  user: Keep these numbers
+  context:
+    page: analyze
+    numbers:
+    - 5
+    - 12
+    - 23
+    - 34
+    - 38
+    - 42
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [5, 12, 23, 34, 38, 42]}'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "What does analyze do?"
-  assistant: "The analyze tool checks how your selected numbers break down across all group sizes (singles, pairs, triples, quads, quints, sixes) in the historical archive. It shows how many times each subset of your numbers appeared together in past draws. Would you like me to analyze some numbers for you?"
-
+  user: What does analyze do?
+  assistant: The analyze tool checks how your selected numbers break down across all group sizes (singles, pairs, triples,
+    quads, quints, sixes) in the historical archive. It shows how many times each subset of your numbers appeared together
+    in past draws. Would you like me to analyze some numbers for you?
+  audience: public
+  required_capability: null
 - lang: en
-  user: "Explain what generate form does"
-  assistant: "Form generation creates lottery number combinations based on historical frequency. It can generate forms with hot numbers or include specific numbers you want. The strong number is always separate from the six-number group. Would you like me to generate a form?"
-
+  user: Explain what generate form does
+  assistant: Form generation creates lottery number combinations based on historical frequency. It can generate forms with
+    hot numbers or include specific numbers you want. The strong number is always separate from the six-number group. Would
+    you like me to generate a form?
+  audience: public
+  required_capability: null
 - lang: en
-  user: "What's the difference between hot and cold?"
-  assistant: "Hot numbers or groups appeared more frequently in past draws within the archive window. Cold numbers appeared less frequently. Historical frequency is not winning probability — each draw is independent."
-
+  user: What's the difference between hot and cold?
+  assistant: Hot numbers or groups appeared more frequently in past draws within the archive window. Cold numbers appeared
+    less frequently. Historical frequency is not winning probability — each draw is independent.
+  audience: public
+  required_capability: null
 - lang: en
-  user: "Is 17 a hot number?"
-  assistant: "I can't answer that from memory — all statistics must come from the lottery service. Would you like me to check the current hot singles statistics for you?"
-
-# ── Off-topic / boundary ─────────────────────────────────────
-
+  user: Is 17 a hot number?
+  assistant: I can't answer that from memory — all statistics must come from the lottery service. Would you like me to check
+    the current hot singles statistics for you?
+  audience: public
+  required_capability: null
 - lang: en
-  user: "Tell me a joke"
-  assistant: "I'm a lottery intelligence assistant, not a general chatbot. I can show you hot/cold statistics, analyze your numbers, generate forms, or manage your saved numbers. What would you like?"
-
+  user: Tell me a joke
+  assistant: I'm a lottery intelligence assistant, not a general chatbot. I can show you hot/cold statistics, analyze your
+    numbers, generate forms, or manage your saved numbers. What would you like?
+  audience: public
+  required_capability: null
 - lang: en
-  user: "Which numbers will win next week?"
-  assistant: "I can't predict future draws — each draw is independent and random. Historical frequency does not increase the probability of a number being drawn next. I can show you historical statistics if you're interested."
-
+  user: Which numbers will win next week?
+  assistant: I can't predict future draws — each draw is independent and random. Historical frequency does not increase the
+    probability of a number being drawn next. I can show you historical statistics if you're interested.
+  audience: public
+  required_capability: null
 - lang: en
-  user: "Buy me a ticket"
-  assistant: "I'm not a ticket-selling agent. I'm a lottery intelligence assistant — I can show statistics, analyze numbers, generate forms, and manage saved numbers. To buy a ticket, please visit the official lottery website."
+  user: Buy me a ticket
+  assistant: I'm not a ticket-selling agent. I'm a lottery intelligence assistant — I can show statistics, analyze numbers,
+    generate forms, and manage saved numbers. To buy a ticket, please visit the official lottery website.
+  audience: public
+  required_capability: null

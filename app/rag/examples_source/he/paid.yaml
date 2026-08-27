@@ -4,116 +4,173 @@
 # ── Basic tool calls ─────────────────────────────────────────
 
 - lang: he
-  user: "הצג לי זוגות חמים"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 2, \"strength\": \"hot\"}"
-
+  user: הצג לי זוגות חמים
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 2, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "מה הם השלשות הקרות?"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 3, \"strength\": \"cold\"}"
-
+  user: מה הם השלשות הקרות?
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 3, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "5 המספרים החמים ביותר"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 5, \"group_size\": 1, \"strength\": \"hot\"}"
-
+  user: 5 המספרים החמים ביותר
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 5, "group_size": 1, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "רביעיות קרות"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 4, \"strength\": \"cold\"}"
-
+  user: רביעיות קרות
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 4, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "חמישיות שכיחות"
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 5, \"strength\": \"hot\"}"
-
+  user: חמישיות שכיחות
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 5, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "צור 3 טפסים"
-  assistant: "TOOL: generate_form ARGS: {\"how_many\": 3, \"form_type\": 6, \"strength\": 2}"
-
+  user: צור 3 טפסים
+  assistant: 'TOOL: generate_form ARGS: {"how_many": 3, "form_type": 6, "strength": 2}'
+  audience: public
+  required_capability: generate_form
 - lang: he
-  user: "תיצור לי 5 טפסים עם 17 ו-23"
-  assistant: "TOOL: generate_form ARGS: {\"how_many\": 5, \"form_type\": 6, \"will_be\": [17, 23], \"strength\": 2}"
-
+  user: תיצור לי 5 טפסים עם 17 ו-23
+  assistant: 'TOOL: generate_form ARGS: {"how_many": 5, "form_type": 6, "will_be": [17, 23], "strength": 2}'
+  audience: public
+  required_capability: generate_form
 - lang: he
-  user: "נתח את המספרים 7, 11, 17, 24, 31, 36"
-  assistant: "TOOL: analyze ARGS: {\"form\": [7, 11, 17, 24, 31, 36]}"
-
+  user: נתח את המספרים 7, 11, 17, 24, 31, 36
+  assistant: 'TOOL: analyze ARGS: {"form": [7, 11, 17, 24, 31, 36]}'
+  audience: public
+  required_capability: analyze
 - lang: he
-  user: "נתח את 3 7 15 22 29 37"
-  assistant: "TOOL: analyze ARGS: {\"form\": [3, 7, 15, 22, 29, 37]}"
-
+  user: נתח את 3 7 15 22 29 37
+  assistant: 'TOOL: analyze ARGS: {"form": [3, 7, 15, 22, 29, 37]}'
+  audience: public
+  required_capability: analyze
 - lang: he
-  user: "מה בולט ב-1 2 3 4 5 6?"
-  assistant: "TOOL: analyze ARGS: {\"form\": [1, 2, 3, 4, 5, 6]}"
-
+  user: מה בולט ב-1 2 3 4 5 6?
+  assistant: 'TOOL: analyze ARGS: {"form": [1, 2, 3, 4, 5, 6]}'
+  audience: public
+  required_capability: analyze
 - lang: he
-  user: "הצג את המספרים השמורים שלי"
-  assistant: "TOOL: list_saved_numbers ARGS: {}"
-
+  user: הצג את המספרים השמורים שלי
+  assistant: 'TOOL: list_saved_numbers ARGS: {}'
+  audience: public
+  required_capability: list_saved_numbers
 - lang: he
-  user: "מה הם הטפסים ששמרתי?"
-  assistant: "TOOL: list_saved_numbers ARGS: {}"
-
-# ── Follow-up: change group size from context ────────────────
-
+  user: מה הם הטפסים ששמרתי?
+  assistant: 'TOOL: list_saved_numbers ARGS: {}'
+  audience: public
+  required_capability: list_saved_numbers
 - lang: he
-  user: "מה עם שלשות קרות?"
-  context: {"page": "statistics", "groupSize": 2, "ordering": "hot"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 3, \"strength\": \"cold\"}"
-
+  user: מה עם שלשות קרות?
+  context:
+    page: statistics
+    groupSize: 2
+    ordering: hot
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 3, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "ורביעיות?"
-  context: {"page": "statistics", "groupSize": 3, "ordering": "cold"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 4, \"strength\": \"cold\"}"
-
+  user: ורביעיות?
+  context:
+    page: statistics
+    groupSize: 3
+    ordering: cold
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 4, "strength": "cold"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "תראה לי את החמים במקום"
-  context: {"page": "statistics", "groupSize": 4, "ordering": "cold"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 4, \"strength\": \"hot\"}"
-
+  user: תראה לי את החמים במקום
+  context:
+    page: statistics
+    groupSize: 4
+    ordering: cold
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 4, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "עכשיו תראה מספרים בודדים"
-  context: {"page": "statistics", "groupSize": 4, "ordering": "hot"}
-  assistant: "TOOL: get_statistics ARGS: {\"how_many\": 10, \"group_size\": 1, \"strength\": \"hot\"}"
-
-# ── Follow-up: from analysis to save ─────────────────────────
-
+  user: עכשיו תראה מספרים בודדים
+  context:
+    page: statistics
+    groupSize: 4
+    ordering: hot
+  assistant: 'TOOL: get_statistics ARGS: {"how_many": 10, "group_size": 1, "strength": "hot"}'
+  audience: public
+  required_capability: get_statistics
 - lang: he
-  user: "נתח את המספרים האלה"
-  context: {"page": "statistics", "groupSize": 2, "ordering": "hot", "numbers": [17, 31]}
-  assistant: "TOOL: analyze ARGS: {\"form\": [17, 31]}"
-
+  user: נתח את המספרים האלה
+  context:
+    page: statistics
+    groupSize: 2
+    ordering: hot
+    numbers:
+    - 17
+    - 31
+  assistant: 'TOOL: analyze ARGS: {"form": [17, 31]}'
+  audience: public
+  required_capability: analyze
 - lang: he
-  user: "שמור אותם כמועדפים"
-  context: {"page": "analyze", "numbers": [7, 11, 17, 24, 31, 36]}
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
-
+  user: שמור אותם כמועדפים
+  context:
+    page: analyze
+    numbers:
+    - 7
+    - 11
+    - 17
+    - 24
+    - 31
+    - 36
+  assistant: 'TOOL: save_numbers ARGS: {"category": "favorites", "numbers": [7, 11, 17, 24, 31, 36]}'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "שמור את המספרים האלה"
-  context: {"page": "analyze", "numbers": [5, 12, 23, 34, 38, 42]}
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [5, 12, 23, 34, 38, 42]}"
-
-# ── Explain vs show me ───────────────────────────────────────
-
+  user: שמור את המספרים האלה
+  context:
+    page: analyze
+    numbers:
+    - 5
+    - 12
+    - 23
+    - 34
+    - 38
+    - 42
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [5, 12, 23, 34, 38, 42]}'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "מה ניתוח עושה?"
-  assistant: "ניתוח בודק איך המספרים שבחרת מתפלגים לפי כל גדלי הקבוצות (מספרים בודדים, זוגות, שלשות, וכו') בארכיון ההיסטורי. הוא מראה כמה פעמים כל תת-קבוצה מהמספרים שלך הופיעה יחד בהגרלות עבר. תרצה שאנתח מספרים עבורך?"
-
+  user: מה ניתוח עושה?
+  assistant: ניתוח בודק איך המספרים שבחרת מתפלגים לפי כל גדלי הקבוצות (מספרים בודדים, זוגות, שלשות, וכו') בארכיון ההיסטורי.
+    הוא מראה כמה פעמים כל תת-קבוצה מהמספרים שלך הופיעה יחד בהגרלות עבר. תרצה שאנתח מספרים עבורך?
+  audience: public
+  required_capability: null
 - lang: he
-  user: "מה ההבדל בין חם לקר?"
-  assistant: "מספרים או קבוצות חמים הופיעו יותר פעמים בהגרלות עבר בטווח שנבחר. קרים הופיעו פחות. תדירות היסטורית אינה הסתברות זכייה — כל הגרלה עצמאית."
-
+  user: מה ההבדל בין חם לקר?
+  assistant: מספרים או קבוצות חמים הופיעו יותר פעמים בהגרלות עבר בטווח שנבחר. קרים הופיעו פחות. תדירות היסטורית אינה הסתברות
+    זכייה — כל הגרלה עצמאית.
+  audience: public
+  required_capability: null
 - lang: he
-  user: "האם 17 הוא מספר חם?"
-  assistant: "אני לא יכול לענות מהזיכרון — כל הסטטיסטיקה מגיעה משירות הלוטו. תרצה שאבדוק את המספרים החמים הנוכחיים עבורך?"
-
-# ── Off-topic / boundary ─────────────────────────────────────
-
+  user: האם 17 הוא מספר חם?
+  assistant: אני לא יכול לענות מהזיכרון — כל הסטטיסטיקה מגיעה משירות הלוטו. תרצה שאבדוק את המספרים החמים הנוכחיים עבורך?
+  audience: public
+  required_capability: null
 - lang: he
-  user: "ספר לי בדיחה"
-  assistant: "אני עוזר ללוטו, לא צ'אטבוט כללי. אני יכול להציג סטטיסטיקה, לנתח מספרים, ליצור טפסים, ולנהל מספרים שמורים. מה תרצה?"
-
+  user: ספר לי בדיחה
+  assistant: אני עוזר ללוטו, לא צ'אטבוט כללי. אני יכול להציג סטטיסטיקה, לנתח מספרים, ליצור טפסים, ולנהל מספרים שמורים. מה
+    תרצה?
+  audience: public
+  required_capability: null
 - lang: he
-  user: "אילו מספרים יזכו בשבוע הבא?"
-  assistant: "אני לא יכול לנבא הגרלות עתידיות — כל הגרלה עצמאית ואקראית. תדירות היסטורית לא מגדילה סיכוי. אוכל להציג סטטיסטיקה היסטורית אם תתעניין."
-
+  user: אילו מספרים יזכו בשבוע הבא?
+  assistant: אני לא יכול לנבא הגרלות עתידיות — כל הגרלה עצמאית ואקראית. תדירות היסטורית לא מגדילה סיכוי. אוכל להציג סטטיסטיקה
+    היסטורית אם תתעניין.
+  audience: public
+  required_capability: null
 - lang: he
-  user: "קנה לי כרטיס"
-  assistant: "אני לא מוכר כרטיסים. אני עוזר ללוטו — אני יכול להציג סטטיסטיקה, לנתח מספרים, ליצור טפסים, ולנהל מספרים שמורים. לקניית כרטיס, אנא פנה לאתר הלוטו הרשמי."
+  user: קנה לי כרטיס
+  assistant: אני לא מוכר כרטיסים. אני עוזר ללוטו — אני יכול להציג סטטיסטיקה, לנתח מספרים, ליצור טפסים, ולנהל מספרים שמורים.
+    לקניית כרטיס, אנא פנה לאתר הלוטו הרשמי.
+  audience: public
+  required_capability: null

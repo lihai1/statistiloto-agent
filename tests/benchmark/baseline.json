@@ -1,0 +1,90 @@
+{
+  "captured_at": "2026-08-26T23:41:44.436313+00:00",
+  "phase": "Phase 0 — Baseline (before architecture changes)",
+  "architecture": "current: tier-based supervisor routing (nl_assistant/analyst/admin_ops) with client intent hint",
+  "unit_tests": {
+    "total": 65,
+    "passed": 65,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "time_seconds": 8.93,
+    "files": [
+      "test_config.py",
+      "test_llm_models.py",
+      "test_rag_examples.py",
+      "test_security.py",
+      "test_supervisor.py"
+    ]
+  },
+  "integration_tests": {
+    "count": 54,
+    "files": [
+      "test_admin_user.py",
+      "test_chat_flows.py",
+      "test_free_user.py",
+      "test_health.py",
+      "test_llm_config.py",
+      "test_metering.py",
+      "test_paid_user.py",
+      "test_rag.py",
+      "test_sessions.py"
+    ],
+    "note": "Integration tests require DB (pgvector). 54 tests pass (excluding e2e_llm chat flows)."
+  },
+  "eval_tests": {
+    "files": [
+      "test_grounding.py",
+      "test_language.py",
+      "test_nl_mapping.py",
+      "test_security.py"
+    ],
+    "categories": [
+      "grounding",
+      "language",
+      "nl_mapping",
+      "security"
+    ],
+    "note": "Eval tests use mock LLM. Real LLM benchmark deferred to Phase 7."
+  },
+  "benchmark_scenarios_planned": [
+    "greeting (trivial)",
+    "capabilities (trivial)",
+    "domain explanation (group_size)",
+    "clear statistics (hot pairs)",
+    "unauthorized deterministic (free save_numbers)",
+    "ambiguous statistics (hot without group_size)",
+    "statistics follow-up",
+    "admin read (audit logs)",
+    "admin write (edit_file with HITL)",
+    "out-of-scope (weather)"
+  ],
+  "metrics_to_capture_in_phase7": [
+    "route",
+    "retrieval_calls",
+    "chunks",
+    "llm_calls",
+    "tool_calls",
+    "prompt_tokens",
+    "completion_tokens",
+    "latency_ms",
+    "correctness",
+    "grounding",
+    "language_match"
+  ],
+  "current_prompt_size_estimate": {
+    "SYSTEM_PROMPT_WITH_TOOLS": "~2000 tokens (monolith)",
+    "SYSTEM_PROMPT_NL": "~1800 tokens (monolith)",
+    "note": "Route-specific compact prompts (~100-150 tokens) target in Phase 5"
+  },
+  "known_issues": [
+    "free.yaml has stale refusal examples (en:49-54, he:45-50) — incorrectly refuse generate/analyze",
+    "free users forced through nl_assistant LLM even for entitled operations (generate/statistics/analyze)",
+    "supervisor routes by client-provided intent (untrusted) + tier, not by semantic normalization",
+    "no OperationSpec — execution readiness not computed; LLM planner used even when args are complete",
+    "ToolExecutor does not re-authorize with JWT claims (defense-in-depth gap)",
+    "no audience/required_capability metadata on examples — RAG isolation incomplete",
+    "no ConversationState — follow-up context not tracked",
+    "admin_ops uses inline keyword guard instead of normalizer"
+  ]
+}

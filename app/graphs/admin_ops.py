@@ -20,7 +20,7 @@ from typing_extensions import TypedDict
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
 from app.metering import meter_llm
-from app.prompts import SYSTEM_PROMPT_WITH_TOOLS
+from app.prompt_builder import build_prompt, format_run_data
 from app.security import TokenClaims
 from app.tools import admin_ops, online_search, code_editor
 from app.graphs.common import format_history, append_history, make_retrieve_node, make_hitl_gate
@@ -37,6 +37,7 @@ class AdminOpsState(TypedDict):
     jwt_token: str
     chunks: list
     history: list
+    lang: Optional[str]
     planned_tool: Optional[str]
     tool_args: Optional[dict]
     tool_result: Optional[dict]
@@ -77,49 +78,32 @@ def plan_action(state: AdminOpsState) -> dict:
     log.info("[admin_ops.plan] START user=%s session=%s history_len=%d", user_sub, session_id, hist_len)
     try:
         llm = get_llm()
-        ctx = "\n".join(c["text"] for c in state.get("chunks", []))
         cfg = get_tier_config(state["tier"])
         tools_str = ", ".join(cfg.allowed_tools)
         hist = format_history(state.get("history", []))
-        prompt = (
-            f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
-            f"You are the owner admin. Map the request to one of these tools: {tools_str}.\n"
-            f"Output EXACTLY ONE LINE and nothing else:\n"
-            f"  TOOL: <tool_name> ARGS: <json_args>\n\n"
-            f"Worked examples (the user may ask exactly like this):\n"
-            f"  Admin request: Show me the recent token usage for all users.\n"
-            f"  Output: TOOL: read_token_usage ARGS: {{\"days\": 7}}\n\n"
-            f"  Admin request: Show me the latest audit logs.\n"
-            f"  Output: TOOL: query_audit_log ARGS: {{\"limit\": 50}}\n\n"
-            f"  Admin request: Run the scraper.\n"
-            f"  Output: TOOL: trigger_scraper ARGS: {{}}\n\n"
-            f"  Admin request: Search the web for recent lottery regulation changes.\n"
-            f"  Output: TOOL: search_web ARGS: {{\"query\": \"lottery regulation changes 2025\", \"limit\": 5}}\n\n"
-            f"  Admin request: Show me app/graphs/admin_ops.py.\n"
-            f"  Output: TOOL: read_code ARGS: {{\"file_path\": \"app/graphs/admin_ops.py\"}}\n\n"
-            f"  Admin request: List files in app/tools.\n"
-            f"  Output: TOOL: list_files ARGS: {{\"directory\": \"app/tools\"}}\n\n"
-            f"  Admin request: Replace the welcome text in app/main.py.\n"
-            f"  Output: TOOL: edit_file ARGS: {{\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}}\n\n"
-            f"  Admin request: Show me the users.\n"
-            f"  Output: TOOL: query_db ARGS: {{\"sql\": \"SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier\", \"limit\": 50}}\n\n"
-            f"  Admin request: What tables are in the agent schema?\n"
-            f"  Output: TOOL: list_db_tables ARGS: {{\"schema\": \"agent\"}}\n\n"
-            f"  Admin request: Show me the chat sessions.\n"
-            f"  Output: TOOL: query_db ARGS: {{\"sql\": \"SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC\", \"limit\": 50}}\n\n"
-            f"Rules:\n"
-            f"  - 'token usage' or 'costs' or 'billing' -> read_token_usage\n"
-            f"  - 'audit' or 'logs' -> query_audit_log\n"
-            f"  - 'scraper' or 'scrape' or 'refresh draws' -> trigger_scraper\n"
-            f"  - 'search the web' or 'look up' or 'find online' -> search_web\n"
-            f"  - 'show me' or 'read' or 'view' a file -> read_code\n"
-            f"  - 'list files' or 'files in' -> list_files\n"
-            f"  - 'edit' or 'replace' or 'change' a file -> edit_file\n"
-            f"  - 'users' or 'who is using' -> query_db (SELECT DISTINCT user_sub, tier FROM agent.token_usage)\n"
-            f"  - 'tables in' or 'schema' -> list_db_tables\n"
-            f"  - 'chat sessions' or 'sessions' -> query_db (SELECT * FROM agent.chat_sessions)\n"
-            f"  - 'saved numbers' or 'saved forms' -> query_db (SELECT * FROM agent.embeddings WHERE corpus='user_data')\n\n"
-            f"If the request does not match any tool, output: TOOL: none"
+        lang = state.get("lang") or "en"
+
+        # Phase 5: use compact planner prompt with admin-specific examples.
+        prompt = build_prompt(
+            route="ambiguous_planner",
+            language=lang,
+            user_message=state["message"],
+            authorized_tools=tools_str,
+            history=hist,
+        )
+        # Append admin-specific tool examples inline (compact).
+        prompt += (
+            "\n\nADMIN TOOLS:\n"
+            "  'token usage'/'costs' → read_token_usage {\"days\": 7}\n"
+            "  'audit'/'logs' → query_audit_log {\"limit\": 50}\n"
+            "  'scraper'/'refresh draws' → trigger_scraper {}\n"
+            "  'search the web' → search_web {\"query\": \"...\", \"limit\": 5}\n"
+            "  'show me'/'read' a .py file → read_code {\"file_path\": \"app/...\"}\n"
+            "  'list files' → list_files {\"directory\": \"app/...\"}\n"
+            "  'edit'/'replace' a file → edit_file {\"file_path\": \"...\", \"old_string\": \"...\", \"new_string\": \"...\"}\n"
+            "  'tables in'/'schema' → list_db_tables {\"schema\": \"agent\"}\n"
+            "  'users'/'sessions' → query_db {\"sql\": \"SELECT ...\", \"limit\": 50}\n"
+            "  No match → TOOL: none"
         )
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
@@ -161,21 +145,19 @@ def plan_action(state: AdminOpsState) -> dict:
                 elif any(k in message_lower for k in ("list files", "files in")):
                     expected = ("list_files", {"directory": tool_args.get("directory", app_path)})
                 elif any(k in message_lower for k in ("edit", "replace", "change")) and app_path.endswith(".py"):
-                    content = tool_args.get("content")
+                    content_arg = tool_args.get("content")
                     old_string = tool_args.get("old_string")
                     new_string = tool_args.get("new_string")
                     quoted = _extract_quoted_content(state["message"])
-                    # Full overwrite requests: if user asked to replace "entire content" and quoted the new text, prefer `content`.
-                    if content is None and ("entire content" in message_lower or "full content" in message_lower or "replace all" in message_lower) and quoted:
-                        content = quoted
-                    elif content is None and (old_string is None or new_string is None):
-                        # No args yet; use any quoted text as the full content for a simple overwrite.
-                        content = quoted
+                    if content_arg is None and ("entire content" in message_lower or "full content" in message_lower or "replace all" in message_lower) and quoted:
+                        content_arg = quoted
+                    elif content_arg is None and (old_string is None or new_string is None):
+                        content_arg = quoted
                     expected = ("edit_file", {
                         "file_path": tool_args.get("file_path", app_path),
                         "old_string": old_string,
                         "new_string": new_string,
-                        "content": content,
+                        "content": content_arg,
                     })
         if expected:
             planned_tool, tool_args = expected
@@ -278,6 +260,7 @@ def finalize(state: AdminOpsState) -> dict:
     session_id = state["session_id"]
     tool_result = state.get("tool_result")
     planned_tool = state.get("planned_tool")
+    lang = state.get("lang") or "en"
 
     # No tool was planned — use the draft or a simple fallback.
     if not planned_tool or planned_tool == "none":
@@ -298,18 +281,13 @@ def finalize(state: AdminOpsState) -> dict:
     try:
         llm = get_llm()
         hist = format_history(state.get("history", []))
-        import json
-        prompt = (
-            f"{SYSTEM_PROMPT_WITH_TOOLS}\n\n"
-            f"You are the owner admin. Summarize the following admin operation result "
-            f"into a concise, readable response for the admin user.\n\n"
-            f"{hist}"
-            f"Admin request: {state['message']}\n\n"
-            f"Tool: {planned_tool}\n"
-            f"Tool result (JSON):\n{json.dumps(tool_result, default=str, ensure_ascii=False, indent=2)}\n\n"
-            f"Transform this into a concise natural language summary. "
-            f"Do NOT dump raw JSON. If the result is a list, show the key items. "
-            f"If it's an error, say so clearly."
+        run_data = format_run_data(planned_tool or "", tool_result)
+        prompt = build_prompt(
+            route="admin_finalizer",
+            language=lang,
+            user_message=state["message"],
+            run_data=run_data,
+            history=hist,
         )
         resp = llm.invoke(prompt)
         response = resp.content if hasattr(resp, "content") else str(resp)

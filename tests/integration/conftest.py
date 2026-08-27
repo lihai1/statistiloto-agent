@@ -175,24 +175,42 @@ def mock_llm_store(request, db_pool):
 
 # ── Checkpointer ─────────────────────────────────────────────
 
-@pytest.fixture(autouse=True, scope="function")
-def test_checkpointer(db_pool):
-    """Use PostgresSaver with the test DB for durable HITL.
+@pytest.fixture(scope="session")
+def session_checkpointer(db_pool):
+    """Session-scoped PostgresSaver — created once, reused across all tests.
 
-    PostgresSaver.from_conn_string() returns a context manager —
-    we enter it to get the actual saver instance.
+    Creating a PostgresSaver per-test was the dominant cost (~20s teardown
+    each) because from_conn_string() opens a new connection pool and
+    __exit__() closes it. Sharing one instance across the session eliminates
+    that overhead.
     """
     from langgraph.checkpoint.postgres import PostgresSaver
     cm = PostgresSaver.from_conn_string(DB_URI)
     cp = cm.__enter__()
     cp.setup()
-    set_checkpointer(cp)
     yield cp
-    set_checkpointer(None)
     try:
         cm.__exit__(None, None, None)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True, scope="function")
+def test_checkpointer(session_checkpointer, db_pool):
+    """Reuse the session-scoped checkpointer; clear checkpoint tables between
+    tests so HITL state doesn't leak across test boundaries."""
+    # Clean checkpoint tables so each test starts fresh.
+    # Table names vary across langgraph versions, so check existence first.
+    with db_pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name LIKE 'checkpoint%'"
+        ).fetchall()
+        for (table_name,) in rows:
+            conn.execute(f'DELETE FROM "{table_name}"')
+    set_checkpointer(session_checkpointer)
+    yield session_checkpointer
+    set_checkpointer(None)
 
 
 # ── Mock embeddings ──────────────────────────────────────────
@@ -328,8 +346,17 @@ def admin_headers(admin_token):
 
 # ── Test client ──────────────────────────────────────────────
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def client():
+    """Session-scoped TestClient — starts the FastAPI app once for the whole
+    session. The startup event runs background RAG ingestion; recreating the
+    app per-test was the dominant cost (~15-20s teardown each) because
+    TestClient.__exit__ waits for the async startup task to finish.
+
+    Per-test state isolation is handled by clean_db, test_checkpointer,
+    mock_llm_store, mock_embeddings, and reset_app_graph fixtures, which all
+    set/reset globals that the running app reads.
+    """
     from fastapi.testclient import TestClient
     with TestClient(app) as c:
         yield c

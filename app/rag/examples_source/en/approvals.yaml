@@ -11,105 +11,116 @@
 #   final:       the expected response after approval/rejection is processed
 #   lang:        language code
 
-# ── save_numbers: approved ───────────────────────────────────
-
 - lang: en
-  user: "Save the numbers 1, 2, 3, 4, 5, 6 as my lucky pick"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
-  approval: "approved"
-  final: "Saved your lucky numbers: 1, 2, 3, 4, 5, 6. You can view them anytime from your saved numbers."
-
+  user: Save the numbers 1, 2, 3, 4, 5, 6 as my lucky pick
+  assistant: 'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [1, 2, 3, 4, 5, 6]}'
+  approval: approved
+  final: 'Saved your lucky numbers: 1, 2, 3, 4, 5, 6. You can view them anytime from your saved numbers.'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Save 7, 11, 17, 24, 31, 36 as favorites"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
-  approval: "approved"
-  final: "Saved your favorites: 7, 11, 17, 24, 31, 36."
-
+  user: Save 7, 11, 17, 24, 31, 36 as favorites
+  assistant: 'TOOL: save_numbers ARGS: {"category": "favorites", "numbers": [7, 11, 17, 24, 31, 36]}'
+  approval: approved
+  final: 'Saved your favorites: 7, 11, 17, 24, 31, 36.'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Keep these numbers 5, 12, 23, 34, 38, 42"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [5, 12, 23, 34, 38, 42]}"
-  approval: "approved"
-  final: "Saved your numbers: 5, 12, 23, 34, 38, 42."
-
+  user: Keep these numbers 5, 12, 23, 34, 38, 42
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [5, 12, 23, 34, 38, 42]}'
+  approval: approved
+  final: 'Saved your numbers: 5, 12, 23, 34, 38, 42.'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Save those as my favorites"
-  context: {"page": "analyze", "numbers": [7, 11, 17, 24, 31, 36]}
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
-  approval: "approved"
-  final: "Saved your favorites: 7, 11, 17, 24, 31, 36."
-
-# ── save_numbers: rejected ───────────────────────────────────
-
+  user: Save those as my favorites
+  context:
+    page: analyze
+    numbers:
+    - 7
+    - 11
+    - 17
+    - 24
+    - 31
+    - 36
+  assistant: 'TOOL: save_numbers ARGS: {"category": "favorites", "numbers": [7, 11, 17, 24, 31, 36]}'
+  approval: approved
+  final: 'Saved your favorites: 7, 11, 17, 24, 31, 36.'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Save 1, 2, 3, 4, 5, 6 as lucky"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
-  approval: "rejected"
-  final: "The save was cancelled. Your numbers were not saved. Would you like to try again with a different set?"
-
+  user: Save 1, 2, 3, 4, 5, 6 as lucky
+  assistant: 'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [1, 2, 3, 4, 5, 6]}'
+  approval: rejected
+  final: The save was cancelled. Your numbers were not saved. Would you like to try again with a different set?
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Save 9, 14, 21, 28, 35, 42"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [9, 14, 21, 28, 35, 42]}"
-  approval: "rejected"
-  final: "Save cancelled. The numbers 9, 14, 21, 28, 35, 42 were not stored."
-
-# ── trigger_scraper: approved ────────────────────────────────
-
+  user: Save 9, 14, 21, 28, 35, 42
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [9, 14, 21, 28, 35, 42]}'
+  approval: rejected
+  final: Save cancelled. The numbers 9, 14, 21, 28, 35, 42 were not stored.
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Run the scraper"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-  approval: "approved"
-  final: "Scraper triggered successfully. The lottery draw data will be refreshed shortly. You can check the audit log for completion status."
-
+  user: Run the scraper
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  approval: approved
+  final: Scraper triggered successfully. The lottery draw data will be refreshed shortly. You can check the audit log for
+    completion status.
+  audience: admin
+  required_capability: trigger_scraper
 - lang: en
-  user: "Refresh the draw data"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-  approval: "approved"
-  final: "Scraper triggered. New draw data will be available once the scrape completes."
-
-# ── trigger_scraper: rejected ────────────────────────────────
-
+  user: Refresh the draw data
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  approval: approved
+  final: Scraper triggered. New draw data will be available once the scrape completes.
+  audience: admin
+  required_capability: trigger_scraper
 - lang: en
-  user: "Run the scraper"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-  approval: "rejected"
-  final: "Scraper trigger cancelled. The draw data was not refreshed."
-
-# ── edit_file: approved ──────────────────────────────────────
-
+  user: Run the scraper
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  approval: rejected
+  final: Scraper trigger cancelled. The draw data was not refreshed.
+  audience: admin
+  required_capability: trigger_scraper
 - lang: en
-  user: "Edit app/main.py and replace hello with hi"
-  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}"
-  approval: "approved"
-  final: "File app/main.py updated successfully. Replaced 'hello' with 'hi'."
-
-# ── edit_file: rejected ──────────────────────────────────────
-
+  user: Edit app/main.py and replace hello with hi
+  assistant: 'TOOL: edit_file ARGS: {"file_path": "app/main.py", "old_string": "hello", "new_string": "hi"}'
+  approval: approved
+  final: File app/main.py updated successfully. Replaced 'hello' with 'hi'.
+  audience: admin
+  required_capability: edit_file
 - lang: en
-  user: "Edit app/main.py and replace hello with hi"
-  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}"
-  approval: "rejected"
-  final: "File edit cancelled. app/main.py was not modified."
-
+  user: Edit app/main.py and replace hello with hi
+  assistant: 'TOOL: edit_file ARGS: {"file_path": "app/main.py", "old_string": "hello", "new_string": "hi"}'
+  approval: rejected
+  final: File edit cancelled. app/main.py was not modified.
+  audience: admin
+  required_capability: edit_file
 - lang: en
-  user: "Replace the welcome text in app/prompts.py"
-  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/prompts.py\", \"old_string\": \"welcome\", \"new_string\": \"hello\"}"
-  approval: "rejected"
-  final: "Edit rejected. app/prompts.py was not changed."
-
-# ── Approval conversation flow (multi-turn) ──────────────────
-
+  user: Replace the welcome text in app/prompts.py
+  assistant: 'TOOL: edit_file ARGS: {"file_path": "app/prompts.py", "old_string": "welcome", "new_string": "hello"}'
+  approval: rejected
+  final: Edit rejected. app/prompts.py was not changed.
+  audience: admin
+  required_capability: edit_file
 - lang: en
-  user: "Save 3, 7, 15, 22, 29, 37 as my lucky numbers"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [3, 7, 15, 22, 29, 37]}"
-  approval: "approved"
-  final: "Saved your lucky numbers: 3, 7, 15, 22, 29, 37."
-
+  user: Save 3, 7, 15, 22, 29, 37 as my lucky numbers
+  assistant: 'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [3, 7, 15, 22, 29, 37]}'
+  approval: approved
+  final: 'Saved your lucky numbers: 3, 7, 15, 22, 29, 37.'
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Now save 1, 2, 3, 4, 5, 6 as well"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
-  approval: "rejected"
-  final: "Save cancelled for 1, 2, 3, 4, 5, 6. Your previous lucky numbers are still saved."
-
+  user: Now save 1, 2, 3, 4, 5, 6 as well
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [1, 2, 3, 4, 5, 6]}'
+  approval: rejected
+  final: Save cancelled for 1, 2, 3, 4, 5, 6. Your previous lucky numbers are still saved.
+  audience: public
+  required_capability: save_numbers
 - lang: en
-  user: "Show me what I have saved"
-  assistant: "TOOL: list_saved_numbers ARGS: {}"
+  user: Show me what I have saved
+  assistant: 'TOOL: list_saved_numbers ARGS: {}'
+  audience: public
+  required_capability: list_saved_numbers

@@ -135,13 +135,15 @@ class TestRAGRetrieval:
             index_document(
                 "examples",
                 "Language: en\nUser: Show me hot pairs\nAssistant: TOOL: get_statistics ARGS: {}",
-                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example"},
+                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example",
+                 "audience": "public", "required_capability": "get_statistics"},
                 embedding,
             )
             index_document(
                 "examples",
                 "Language: he\nUser: הצג לי זוגות חמים\nAssistant: TOOL: get_statistics ARGS: {}",
-                {"source": "he/paid.yaml", "lang": "he", "type": "qa_example"},
+                {"source": "he/paid.yaml", "lang": "he", "type": "qa_example",
+                 "audience": "public", "required_capability": "get_statistics"},
                 embedding,
             )
 
@@ -202,7 +204,8 @@ class TestRAGRetrieval:
             index_document(
                 "examples",
                 "Language: en\nUser: hot pairs\nAssistant: TOOL: get_statistics ARGS: {}",
-                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example"},
+                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example",
+                 "audience": "public", "required_capability": "get_statistics"},
                 embedding,
             )
             index_document("docs", "Hot and cold numbers documentation", {}, embedding)
@@ -226,3 +229,173 @@ class TestRAGRetrieval:
             )
         finally:
             clear_corpus("examples")
+
+    def test_examples_filtered_by_audience_and_capability(self, db_pool):
+        """Examples corpus is filtered by audience + required_capability.
+
+        Free users must not retrieve admin-only examples or examples for tools
+        they cannot use. Admin can retrieve both public and admin examples.
+        """
+        from app.rag.indexers import index_document, clear_corpus
+        from app.rag.retriever import retrieve
+
+        embedding = [0.8] + [0.0] * 767
+        clear_corpus("examples")
+        try:
+            index_document(
+                "examples",
+                "Language: en\nUser: Show hot pairs\nAssistant: TOOL: get_statistics ARGS: {}",
+                {"source": "en/paid.yaml", "lang": "en", "type": "qa_example",
+                 "audience": "public", "required_capability": "get_statistics"},
+                embedding,
+            )
+            index_document(
+                "examples",
+                "Language: en\nUser: Save numbers\nAssistant: TOOL: save_numbers ARGS: {}",
+                {"source": "en/approvals.yaml", "lang": "en", "type": "qa_example",
+                 "audience": "public", "required_capability": "save_numbers"},
+                embedding,
+            )
+            index_document(
+                "examples",
+                "Language: en\nUser: Query audit log\nAssistant: TOOL: query_audit_log ARGS: {}",
+                {"source": "en/admin.yaml", "lang": "en", "type": "qa_example",
+                 "audience": "admin", "required_capability": "query_audit_log"},
+                embedding,
+            )
+
+            # Free user: can get the get_statistics example, NOT save_numbers (unauthorized),
+            # NOT query_audit_log (admin audience).
+            free_results = retrieve(
+                query="show me",
+                corpora=["examples"],
+                user_sub="free-user",
+                tier="free",
+                embedding=embedding,
+                lang="en",
+            )
+            free_caps = {r["metadata"].get("required_capability") for r in free_results}
+            assert "get_statistics" in free_caps
+            assert "save_numbers" not in free_caps
+            assert "query_audit_log" not in free_caps
+
+            # Paid user: can get get_statistics and save_numbers, NOT query_audit_log.
+            paid_results = retrieve(
+                query="show me",
+                corpora=["examples"],
+                user_sub="paid-user",
+                tier="paid",
+                embedding=embedding,
+                lang="en",
+            )
+            paid_caps = {r["metadata"].get("required_capability") for r in paid_results}
+            assert "get_statistics" in paid_caps
+            assert "save_numbers" in paid_caps
+            assert "query_audit_log" not in paid_caps
+
+            # Admin user: can get all three.
+            admin_results = retrieve(
+                query="show me",
+                corpora=["examples"],
+                user_sub="admin-user",
+                tier="admin",
+                embedding=embedding,
+                lang="en",
+            )
+            admin_caps = {r["metadata"].get("required_capability") for r in admin_results}
+            assert "get_statistics" in admin_caps
+            assert "save_numbers" in admin_caps
+            assert "query_audit_log" in admin_caps
+        finally:
+            clear_corpus("examples")
+
+
+class TestIntentAwareRetrieval:
+    """Phase 4: The retrieve node skips RAG for deterministic paths."""
+
+    def test_retrieve_skips_rag_for_statistics(self, db_pool):
+        """Statistics requests with high confidence → 0 RAG chunks."""
+        from app.graphs.common import make_retrieve_node
+
+        retrieve_docs = make_retrieve_node("test")
+        state = {
+            "user_sub": "test-user",
+            "tier": "free",
+            "session_id": "test-sess",
+            "message": "What are the hot pairs?",
+            "lang": "en",
+            "context": None,
+        }
+        result = retrieve_docs(state)
+        assert result["chunks"] == [], f"Expected 0 chunks for statistics, got {result['chunks']}"
+
+    def test_retrieve_skips_rag_for_trivial(self, db_pool):
+        """Trivial requests (greetings) → 0 RAG chunks."""
+        from app.graphs.common import make_retrieve_node
+
+        retrieve_docs = make_retrieve_node("test")
+        state = {
+            "user_sub": "test-user",
+            "tier": "free",
+            "session_id": "test-sess",
+            "message": "Hi",
+            "lang": "en",
+            "context": None,
+        }
+        result = retrieve_docs(state)
+        assert result["chunks"] == []
+
+    def test_retrieve_skips_rag_for_out_of_scope(self, db_pool):
+        """Out-of-scope requests → 0 RAG chunks."""
+        from app.graphs.common import make_retrieve_node
+
+        retrieve_docs = make_retrieve_node("test")
+        state = {
+            "user_sub": "test-user",
+            "tier": "free",
+            "session_id": "test-sess",
+            "message": "What's the weather today?",
+            "lang": "en",
+            "context": None,
+        }
+        result = retrieve_docs(state)
+        assert result["chunks"] == []
+
+    def test_retrieve_skips_rag_for_admin_operation(self, db_pool):
+        """Admin operations with high confidence → 0 RAG chunks."""
+        from app.graphs.common import make_retrieve_node
+
+        retrieve_docs = make_retrieve_node("test")
+        state = {
+            "user_sub": "admin-user",
+            "tier": "admin",
+            "session_id": "test-sess",
+            "message": "Show me the audit log",
+            "lang": "en",
+            "context": None,
+        }
+        result = retrieve_docs(state)
+        assert result["chunks"] == []
+
+    def test_retrieve_fetches_for_domain_explanation(self, db_pool, mock_embeddings):
+        """Domain explanation → fetches from docs corpus."""
+        from app.graphs.common import make_retrieve_node
+        from app.rag.indexers import index_document, clear_corpus
+
+        embedding = [0.3] + [0.0] * 767
+        clear_corpus("docs")
+        try:
+            index_document("docs", "Hot numbers appear more frequently in past draws.", {}, embedding)
+            retrieve_docs = make_retrieve_node("test")
+            state = {
+                "user_sub": "test-user",
+                "tier": "free",
+                "session_id": "test-sess",
+                "message": "What does the archive window mean?",
+                "lang": "en",
+                "context": None,
+            }
+            result = retrieve_docs(state)
+            assert len(result["chunks"]) > 0, "Domain explanation should fetch docs"
+        finally:
+            clear_corpus("docs")

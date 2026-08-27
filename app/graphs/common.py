@@ -65,23 +65,64 @@ def make_retrieve_node(log_prefix: str) -> Callable[[dict], dict]:
 
     The returned function retrieves from the tier's allowed corpora using the
     user's message as the query.
+
+    Phase 4 — Intent-aware retrieval:
+      - trivial / out_of_scope / statistics / admin_operation (high confidence) → skip RAG (0 chunks)
+      - domain_explanation → docs corpus only (top_k=3)
+      - ambiguous / medium confidence → docs corpus only (top_k=3)
+    This avoids unnecessary embedding queries and DB round-trips for paths
+    where RAG adds no value.
     """
     def retrieve_docs(state: dict) -> dict:
         user_sub = state["user_sub"]
         tier = state["tier"]
         session_id = state["session_id"]
         lang = state.get("lang")
+        message = state.get("message", "")
         log.info("[%s.retrieve] START user=%s tier=%s session=%s lang=%s", log_prefix, user_sub, tier, session_id, lang)
         try:
+            # Phase 4: Determine if RAG is needed based on message content.
+            from app.normalizer import normalize as _normalize
+            req = _normalize(
+                message=message,
+                lang_hint=lang,
+                context=state.get("context"),
+                conversation=None,
+                client_intent_hint=state.get("client_intent_hint"),
+            )
+
+            # Skip RAG for deterministic paths where it adds no value.
+            if req.request_kind in ("trivial", "out_of_scope"):
+                log.info("[%s.retrieve] SKIP kind=%s — deterministic path, 0 RAG", log_prefix, req.request_kind)
+                return {"chunks": []}
+
+            # Statistics and admin operations with high confidence → structured
+            # data from tools, no RAG needed.
+            # confidence is a float [0,1]; high = >= 0.8
+            if req.request_kind in ("statistics", "number_analysis", "form_generation") and req.confidence >= 0.8:
+                log.info("[%s.retrieve] SKIP kind=%s confidence=%.2f — tool data, 0 RAG", log_prefix, req.request_kind, req.confidence)
+                return {"chunks": []}
+
+            if req.request_kind == "admin_operation" and req.confidence >= 0.8:
+                log.info("[%s.retrieve] SKIP kind=admin_operation confidence=%.2f — typed tool, 0 RAG", log_prefix, req.confidence)
+                return {"chunks": []}
+
+            # domain_explanation and ambiguous/medium → docs only, top_k=3.
             cfg = get_tier_config(tier)
+            # Only retrieve from docs (and examples for domain explanations).
+            corpora = ["docs"]
+            if "examples" in cfg.rag_corpora and req.request_kind == "domain_explanation":
+                corpora.append("examples")
+
             chunks = retrieve(
-                query=state["message"],
-                corpora=cfg.rag_corpora,
+                query=message,
+                corpora=corpora,
                 user_sub=user_sub,
                 tier=tier,
                 lang=lang,
+                top_k=3,
             )
-            log.info("[%s.retrieve] SUCCESS user=%s session=%s chunks=%d", log_prefix, user_sub, session_id, len(chunks))
+            log.info("[%s.retrieve] SUCCESS user=%s session=%s kind=%s chunks=%d", log_prefix, user_sub, session_id, req.request_kind, len(chunks))
             return {"chunks": chunks}
         except Exception as e:
             log.error("[%s.retrieve] ERROR user=%s session=%s msg=%s", log_prefix, user_sub, session_id, e, exc_info=True)

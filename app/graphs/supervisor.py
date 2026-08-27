@@ -1,12 +1,20 @@
 """Supervisor graph — top-level hierarchical router.
 
-Routes by tier + intent to one of three worker subgraphs:
-  - nl_assistant: NL → tool calls (free/paid/admin)
-  - analyst: multi-step RAG + analysis (paid/admin)
-  - admin_ops: admin operations (admin only)
+New architecture (Phases 2-3):
+  1. route: normalize message, resolve tool, authorize, and route.
+     - Trivial / out-of-scope / missing known parameter → direct_response (0 LLM)
+     - Read tool, execution_ready, authorized              → direct_tool (0 LLM planner)
+     - Write / ambiguous / not execution_ready             → planner workers (analyst/admin_ops/nl_assistant)
 
-Tier gating happens HERE — the single choke point. Disallowed intents
-are downgraded to nl_assistant.
+Tier gating happens via CapabilityConfig using trusted JWT claims — never mutable graph state.
+
+SECURITY: The client-provided `intent` field is an UNTRUSTED HINT. It is logged for
+audit but cannot force a route that the tier doesn't allow.
+
+IMPORTANT: The route function returns a plain string (not Command) because conditional
+edges in this LangGraph version don't support Command returns. Each direct node
+re-derives the NormalizedRequest/ToolResolution from the message. This avoids a
+separate normalize node, which would break interrupt propagation in subgraphs.
 """
 
 from __future__ import annotations
@@ -20,6 +28,22 @@ from typing_extensions import TypedDict
 from app.graphs.nl_assistant import build_nl_assistant_graph
 from app.graphs.analyst import build_analyst_graph
 from app.graphs.admin_ops import build_admin_ops_graph
+from app.capability import CapabilityConfig
+from app.normalizer import normalize, NormalizedRequest, ConversationState
+from app.tool_resolver import resolve, ToolResolution
+from app.renderer import (
+    render_greeting,
+    render_goodbye,
+    render_capabilities,
+    render_unauthorized,
+    render_missing,
+    render_out_of_scope,
+    render_structured_result,
+    render_tool_error,
+    render_free_generic,
+)
+from app.tool_executor import execute_tool
+from app.free_tier_llm import is_free_llm_enabled
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +57,12 @@ class SupervisorState(TypedDict):
     jwt_token: str
     history: list
     context: Optional[dict]         # structured UI context (page, numbers, groupSize, etc.)
+    lang: Optional[str]             # user language hint (not authoritative)
+    # Client intent hint — UNTRUSTED, logged for audit, never authoritative.
+    client_intent_hint: Optional[str]
+    # Phase 6: conversation state for follow-up detection.
+    prev_conversation_state: Optional[dict]
+    conversation_state: Optional[dict]
     # Worker output bubbles up here.
     response: Optional[str]
     chunks: list
@@ -42,52 +72,249 @@ class SupervisorState(TypedDict):
     tool_result: Optional[dict]
 
 
-def classify_intent(state: SupervisorState) -> str:
-    """Route by tier + intent. Tier gating happens HERE — the single choke point."""
+def _authorize(tool: str | None, tier: str) -> bool:
+    if not tool:
+        return False
+    return CapabilityConfig.is_allowed(tier, tool)
+
+
+def _build_conversation_state(prev: dict | None) -> ConversationState | None:
+    """Reconstruct a ConversationState from the previous checkpoint's dict."""
+    if not prev or not isinstance(prev, dict):
+        return None
+    last_req_dict = prev.get("last_request")
+    if not last_req_dict or not isinstance(last_req_dict, dict):
+        return None
+    try:
+        last_req = NormalizedRequest(**last_req_dict)
+        return ConversationState(last_request=last_req)
+    except Exception:
+        return None
+
+
+def _derive(state: SupervisorState) -> tuple[NormalizedRequest, ToolResolution]:
+    """Re-derive NormalizedRequest and ToolResolution from the message.
+
+    Phase 6: builds ConversationState from the previous checkpoint and passes
+    it to normalize() for follow-up inheritance.
+    """
+    conv_state = _build_conversation_state(state.get("prev_conversation_state"))
+    req = normalize(
+        message=state.get("message", ""),
+        lang_hint=state.get("lang"),
+        context=state.get("context"),
+        conversation=conv_state,
+        client_intent_hint=state.get("client_intent_hint"),
+    )
+    res = resolve(req)
+    return req, res
+
+
+def route(state: SupervisorState) -> str:
+    """Normalize, resolve, authorize, and route.
+
+    Returns a plain string route name. Each direct node re-derives the
+    NormalizedRequest/ToolResolution from the message to avoid a separate
+    normalize node (which would break interrupt propagation in subgraphs).
+    """
     tier = state.get("tier", "free")
-    intent = state.get("intent")
     user_sub = state.get("user_sub", "unknown")
     session_id = state.get("session_id", "")
 
-    # Admin-only intents are unreachable for non-admin tiers.
+    req, res = _derive(state)
+
+    log.info("[supervisor.route] user=%s session=%s kind=%s op=%s tool=%s ready=%s",
+             user_sub, session_id, req.request_kind, req.operation, res.tool, res.execution_ready)
+
+    # Authorization check using CapabilityConfig (reads agent.yaml).
+    if res.tool and not _authorize(res.tool, tier):
+        log.info("[supervisor.route] DENY user=%s session=%s tool=%s tier=%s",
+                 user_sub, session_id, res.tool, tier)
+        return "direct_unauthorized"
+
+    # Trivial → deterministic response (0 LLM).
+    if req.request_kind == "trivial":
+        return "direct_trivial"
+
+    # Out-of-scope → deterministic response (0 LLM).
+    if req.request_kind == "out_of_scope":
+        return "direct_out_of_scope"
+
+    # Domain explanation → NL worker (needs LLM for natural explanation).
+    # Free-tier gating: when free-tier LLM is disabled (default), free users
+    # get a generic deterministic response instead of calling the LLM.
+    if req.request_kind == "domain_explanation":
+        if tier == "free" and not is_free_llm_enabled():
+            return "direct_generic"
+        return "nl_assistant"
+
+    # Missing known parameter but authorization passed → deterministic clarification.
+    if not res.execution_ready and res.missing_hint:
+        return "direct_clarify"
+
+    # Execution-ready and authorized. Read tool → direct execution (0 LLM planner).
+    if res.execution_ready and res.tool:
+        if not CapabilityConfig.is_write_tool(res.tool):
+            return "direct_tool"
+
+    # Not ready or is a write tool → route to planner worker with pre-filled state.
+    # Tier gating: free users can only use nl_assistant, paid users can use
+    # nl_assistant or analyst, admin users can use all three.
+
+    # save_numbers and list_saved_numbers are paid-tier tools handled by analyst.
+    if res.tool in ("save_numbers", "list_saved_numbers"):
+        if tier in ("paid", "admin"):
+            return "analyst"
+        return "nl_assistant"
+
+    # Admin-only tools → admin_ops for admin, nl_assistant fallback for others.
+    if req.request_kind == "admin_operation" or res.tool in (
+        "query_audit_log", "read_token_usage", "search_web", "read_code",
+        "edit_file", "list_files", "list_db_tables", "query_db", "trigger_scraper",
+    ):
+        if tier == "admin":
+            return "admin_ops"
+        return "nl_assistant"
+
+    # Ambiguous or requires LLM planning — route by tier capability.
+    # Free-tier gating: when free-tier LLM is disabled (default), free users
+    # get a generic deterministic response instead of calling the LLM.
+    if tier == "free":
+        if not is_free_llm_enabled():
+            return "direct_generic"
+        return "nl_assistant"
+    return "analyst"
+
+
+def _conv_state_update(req: NormalizedRequest) -> dict:
+    """Build a conversation_state update dict for the checkpointer.
+
+    Phase 6: persists the current normalized request so the next turn
+    can detect follow-ups and inherit compatible parameters.
+    """
+    return {
+        "conversation_state": {
+            "last_request": req.__dict__,
+        }
+    }
+
+
+def direct_trivial(state: SupervisorState) -> dict:
+    """Return a deterministic trivial response (greeting / capabilities / goodbye)."""
+    req, _ = _derive(state)
+    tier = state.get("tier", "free")
+    lang = req.language
+    trivial = req.trivial_kind
+
+    if trivial == "greeting":
+        resp = render_greeting(lang)
+    elif trivial == "goodbye":
+        resp = render_goodbye(lang)
+    elif trivial == "capabilities":
+        resp = render_capabilities(tier, lang)
+    else:
+        resp = render_greeting(lang)
+    return {"response": resp, **_conv_state_update(req)}
+
+
+def direct_out_of_scope(state: SupervisorState) -> dict:
+    req, _ = _derive(state)
+    return {"response": render_out_of_scope(req.language), **_conv_state_update(req)}
+
+
+def direct_generic(state: SupervisorState) -> dict:
+    """Return a generic deterministic response for free-tier LLM-gated requests.
+
+    Used when free-tier LLM is disabled (default) and the request is ambiguous
+    or a domain explanation. Zero LLM calls.
+    """
+    req, _ = _derive(state)
+    return {"response": render_free_generic(req.language), **_conv_state_update(req)}
+
+
+def direct_clarify(state: SupervisorState) -> dict:
+    req, res = _derive(state)
+    return {"response": render_missing(res.missing_hint, req.language), **_conv_state_update(req)}
+
+
+def direct_unauthorized(state: SupervisorState) -> dict:
+    req, res = _derive(state)
+    tier = state.get("tier", "free")
+    return {"response": render_unauthorized(res.tool, tier, req.language), **_conv_state_update(req)}
+
+
+def direct_tool(state: SupervisorState) -> dict:
+    """Execute a read tool directly (zero LLM planner calls)."""
+    req, res = _derive(state)
+    jwt_token = state.get("jwt_token", "")
+    lang = req.language
+
+    if not res or not res.tool or not res.args:
+        return {"response": render_missing(None, lang), **_conv_state_update(req)}
+
+    try:
+        result = execute_tool(res.tool, res.args, jwt_token)
+        return {"tool_result": result, "response": render_structured_result(res.tool, result, lang), **_conv_state_update(req)}
+    except PermissionError as e:
+        log.warning("[supervisor.direct_tool] DENIED user=%s tool=%s: %s", state.get("user_sub"), res.tool, e)
+        return {"response": render_unauthorized(res.tool, state.get("tier", "free"), lang), **_conv_state_update(req)}
+    except Exception as e:
+        log.error("[supervisor.direct_tool] ERROR user=%s tool=%s: %s", state.get("user_sub"), res.tool, e)
+        return {"response": render_tool_error(lang), **_conv_state_update(req)}
+
+
+def classify_intent(state: SupervisorState) -> str:
+    """DEPRECATED: kept for unit-test backwards compatibility.
+
+    Use `route()` instead; this function is a simple tier-gated fallback.
+    """
+    tier = state.get("tier", "free")
+    intent = state.get("intent")
+
     if intent == "admin_ops" and tier != "admin":
-        log.info("[supervisor.classify] DOWNGRADE admin_ops→nl_assistant user=%s tier=%s session=%s", user_sub, tier, session_id)
         return "nl_assistant"
-
-    # Paid-only intents are unreachable for free tier.
     if intent == "analyst" and tier == "free":
-        log.info("[supervisor.classify] DOWNGRADE analyst→nl_assistant user=%s tier=%s session=%s", user_sub, tier, session_id)
         return "nl_assistant"
-
-    route = intent or "nl_assistant"
-    log.info("[supervisor.classify] ROUTE user=%s tier=%s session=%s intent=%s → %s", user_sub, tier, session_id, intent, route)
-    return route
+    return intent or "nl_assistant"
 
 
 def build_supervisor_graph(checkpointer=None):
-    """Build the top-level supervisor graph with three worker subgraphs.
+    """Build the new supervisor graph with deterministic routing.
 
-    Args:
-        checkpointer: a LangGraph checkpointer (PostgresSaver for production,
-                      None for unit tests).
+    The route function returns a plain string (not Command) to stay compatible
+    with conditional edges. Direct nodes re-derive the normalized request from
+    the message. This avoids a separate normalize node, preserving interrupt
+    propagation in subgraphs (START → route → subgraph → END).
     """
-    # Workers are compiled subgraphs — each owns its state schema, tools, RAG filter.
     nl_graph = build_nl_assistant_graph()
     analyst_graph = build_analyst_graph()
     admin_graph = build_admin_ops_graph()
 
     g = StateGraph(SupervisorState)
+    g.add_node("direct_trivial", direct_trivial)
+    g.add_node("direct_out_of_scope", direct_out_of_scope)
+    g.add_node("direct_generic", direct_generic)
+    g.add_node("direct_clarify", direct_clarify)
+    g.add_node("direct_unauthorized", direct_unauthorized)
+    g.add_node("direct_tool", direct_tool)
     g.add_node("nl_assistant", nl_graph)
     g.add_node("analyst", analyst_graph)
     g.add_node("admin_ops", admin_graph)
 
-    g.add_conditional_edges(START, classify_intent, {
+    g.add_conditional_edges(START, route, {
+        "direct_trivial": "direct_trivial",
+        "direct_out_of_scope": "direct_out_of_scope",
+        "direct_generic": "direct_generic",
+        "direct_clarify": "direct_clarify",
+        "direct_unauthorized": "direct_unauthorized",
+        "direct_tool": "direct_tool",
         "nl_assistant": "nl_assistant",
         "analyst": "analyst",
         "admin_ops": "admin_ops",
     })
-    g.add_edge("nl_assistant", END)
-    g.add_edge("analyst", END)
-    g.add_edge("admin_ops", END)
+    for node in ("direct_trivial", "direct_out_of_scope", "direct_generic",
+                 "direct_clarify", "direct_unauthorized", "direct_tool",
+                 "nl_assistant", "analyst", "admin_ops"):
+        g.add_edge(node, END)
 
     return g.compile(checkpointer=checkpointer)

@@ -22,11 +22,20 @@ class TestAdminUserChat:
         )
         assert resp.status_code == 200
 
-    def test_admin_token_usage_logged(self, client, admin_headers, db_pool):
-        """Admin user chat logs token usage."""
+    def test_admin_token_usage_logged(self, client, admin_headers, db_pool, mock_llm_store):
+        """Admin user chat logs token usage when the LLM is invoked.
+
+        With the new deterministic architecture, "Show token usage" is resolved
+        directly (zero LLM calls). To verify token logging, we send a message
+        that routes to the admin_ops planner (write tool → HITL → LLM plan).
+        """
+        mock_llm_store.get_llm().responses = [
+            "TOOL: trigger_scraper ARGS: {}",
+            "Scraper triggered successfully.",
+        ]
         client.post(
             "/chat",
-            json={"session_id": "admin-sess-2", "message": "Show token usage",
+            json={"session_id": "admin-sess-2", "message": "Run the scraper",
                   "intent": "admin_ops"},
             headers=admin_headers,
         )

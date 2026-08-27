@@ -21,22 +21,35 @@ class TestFreeUserChat:
         data = resp.json()
         assert "response" in data or "paused" in data
 
-    def test_free_user_token_usage_logged(self, client, free_headers, db_pool):
-        """After a chat, token_usage should have a row for the free user."""
-        client.post(
-            "/chat",
-            json={"session_id": "sess-2", "message": "What are frequent pairs?"},
-            headers=free_headers,
-        )
-        with db_pool.connection() as conn:
-            row = conn.execute(
-                "SELECT user_sub, tier, provider FROM agent.token_usage "
-                "WHERE user_sub = 'free-user-001' LIMIT 1"
-            ).fetchone()
-        assert row is not None
-        assert row[0] == "free-user-001"
-        assert row[1] == "free"
-        assert row[2] == "mock"  # mock LLM provider
+    def test_free_user_token_usage_logged(self, client, free_headers, db_pool, mock_llm_store):
+        """After a chat that invokes the LLM, token_usage should have a row.
+
+        With the deterministic architecture, clear statistics requests are
+        resolved directly (zero LLM calls). Free-tier LLM is disabled by
+        default, so domain-explanation questions also skip the LLM. To verify
+        token logging, we enable the free-tier LLM toggle and send a
+        domain-explanation question that routes to the nl_assistant worker.
+        """
+        from app.free_tier_llm import set_free_llm_enabled, reset_free_llm_toggle
+        set_free_llm_enabled(True)
+        try:
+            mock_llm_store.get_llm().responses = ["The archive window controls which historical draws are included."]
+            client.post(
+                "/chat",
+                json={"session_id": "sess-2", "message": "Can you explain the archive window?"},
+                headers=free_headers,
+            )
+            with db_pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT user_sub, tier, provider FROM agent.token_usage "
+                    "WHERE user_sub = 'free-user-001' LIMIT 1"
+                ).fetchone()
+            assert row is not None
+            assert row[0] == "free-user-001"
+            assert row[1] == "free"
+            assert row[2] == "mock"  # mock LLM provider
+        finally:
+            reset_free_llm_toggle()
 
     def test_free_user_analyst_intent_downgraded(self, client, free_headers):
         """Free user requesting analyst intent should still get a response

@@ -14,8 +14,8 @@ from typing_extensions import TypedDict
 
 from app.llm.router import get_llm
 from app.metering import meter_llm
-from app.prompts import SYSTEM_PROMPT_NL
-from app.graphs.common import format_history, format_ui_context, append_history, make_retrieve_node
+from app.prompt_builder import build_prompt
+from app.graphs.common import format_history, append_history, make_retrieve_node
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class NLAssistantState(TypedDict):
     chunks: list
     history: list
     context: Optional[dict]
+    lang: Optional[str]
     response: Optional[str]
 
 
@@ -45,15 +46,15 @@ def generate_response(state: NLAssistantState) -> dict:
         llm = get_llm()
         ctx = "\n".join(c["text"] for c in state.get("chunks", []))
         hist = format_history(state.get("history", []))
-        ui_context = format_ui_context(state.get("context"))
-        prompt = (
-            f"{SYSTEM_PROMPT_NL}\n\n"
-            f"Context:\n{ctx}\n\n"
-            f"{ui_context}"
-            f"{hist}"
-            f"Question: {state['message']}\n\n"
-            f"Answer based on the context above and the previous conversation. "
-            f"If the question refers to something said earlier, use the conversation history."
+        lang = state.get("lang") or "en"
+
+        # Phase 5: use compact route-specific prompt.
+        prompt = build_prompt(
+            route="nl_general",
+            language=lang,
+            user_message=state["message"],
+            knowledge=ctx,
+            history=hist,
         )
         resp = llm.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)

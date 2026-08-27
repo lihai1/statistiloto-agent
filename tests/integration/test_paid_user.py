@@ -32,7 +32,7 @@ class TestPaidUserChat:
         ]
         resp = client.post(
             "/chat",
-            json={"session_id": "paid-hitl-1", "message": "Save my lucky numbers",
+            json={"session_id": "paid-hitl-1", "message": "Save my lucky numbers 1,2,3,4,5,6",
                   "intent": "analyst"},
             headers=paid_headers,
         )
@@ -49,7 +49,7 @@ class TestPaidUserChat:
         # First, start the chat to trigger the interrupt
         client.post(
             "/chat",
-            json={"session_id": "paid-hitl-2", "message": "Save my lucky numbers",
+            json={"session_id": "paid-hitl-2", "message": "Save my lucky numbers 1,2,3,4,5,6",
                   "intent": "analyst"},
             headers=paid_headers,
         )
@@ -70,7 +70,7 @@ class TestPaidUserChat:
         ]
         client.post(
             "/chat",
-            json={"session_id": "paid-hitl-3", "message": "Save my lucky numbers",
+            json={"session_id": "paid-hitl-3", "message": "Save my lucky numbers 1,2,3,4,5,6",
                   "intent": "analyst"},
             headers=paid_headers,
         )
@@ -100,11 +100,20 @@ class TestPaidUserChat:
         assert "response" in data
         assert data.get("paused") is not True
 
-    def test_paid_user_token_usage_logged(self, client, paid_headers, db_pool):
-        """Paid user chat logs token usage."""
+    def test_paid_user_token_usage_logged(self, client, paid_headers, db_pool, mock_llm_store):
+        """Paid user chat logs token usage when the LLM is invoked.
+
+        With the new deterministic architecture, clear requests are resolved
+        directly. To verify token logging, we send a save_numbers request
+        which routes to the analyst worker (LLM planning + HITL).
+        """
+        mock_llm_store.get_llm().responses = [
+            'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [1,2,3,4,5,6]}',
+            "Numbers saved successfully.",
+        ]
         client.post(
             "/chat",
-            json={"session_id": "paid-sess-2", "message": "Analyze",
+            json={"session_id": "paid-sess-2", "message": "Save my lucky numbers 1,2,3,4,5,6",
                   "intent": "analyst"},
             headers=paid_headers,
         )

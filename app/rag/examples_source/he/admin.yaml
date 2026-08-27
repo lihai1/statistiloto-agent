@@ -4,129 +4,168 @@
 # ── Basic admin tools ────────────────────────────────────────
 
 - lang: he
-  user: "הצג לי את יומן הביקורת"
-  assistant: "TOOL: query_audit_log ARGS: {\"limit\": 50}"
-
+  user: הצג לי את יומן הביקורת
+  assistant: 'TOOL: query_audit_log ARGS: {"limit": 50}'
+  audience: admin
+  required_capability: query_audit_log
 - lang: he
-  user: "הצג לי צריכת טוקנים"
-  assistant: "TOOL: read_token_usage ARGS: {\"days\": 7}"
-
+  user: הצג לי צריכת טוקנים
+  assistant: 'TOOL: read_token_usage ARGS: {"days": 7}'
+  audience: admin
+  required_capability: read_token_usage
 - lang: he
-  user: "מה עלויות ה-LLM?"
-  assistant: "TOOL: read_token_usage ARGS: {\"days\": 7}"
-
+  user: מה עלויות ה-LLM?
+  assistant: 'TOOL: read_token_usage ARGS: {"days": 7}'
+  audience: admin
+  required_capability: read_token_usage
 - lang: he
-  user: "הצג לי את המשתמשים"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier\", \"limit\": 50}"
-
+  user: הצג לי את המשתמשים
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier", "limit":
+    50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "הצג לי את השיחות"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC\", \"limit\": 50}"
-
+  user: הצג לי את השיחות
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions
+    ORDER BY updated_at DESC", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "אילו טבלאות יש בסכמת agent?"
-  assistant: "TOOL: list_db_tables ARGS: {\"schema\": \"agent\"}"
-
+  user: אילו טבלאות יש בסכמת agent?
+  assistant: 'TOOL: list_db_tables ARGS: {"schema": "agent"}'
+  audience: admin
+  required_capability: list_db_tables
 - lang: he
-  user: "הרץ את הסקרייפר"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-
+  user: הרץ את הסקרייפר
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  audience: admin
+  required_capability: trigger_scraper
 - lang: he
-  user: "רענן את נתוני ההגרלות"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-
+  user: רענן את נתוני ההגרלות
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  audience: admin
+  required_capability: trigger_scraper
 - lang: he
-  user: "חפש באינטרנט שינויי רגולציה ללוטו"
-  assistant: "TOOL: search_web ARGS: {\"query\": \"lottery regulation changes 2025\", \"limit\": 5}"
-
+  user: חפש באינטרנט שינויי רגולציה ללוטו
+  assistant: 'TOOL: search_web ARGS: {"query": "lottery regulation changes 2025", "limit": 5}'
+  audience: admin
+  required_capability: search_web
 - lang: he
-  user: "הצג לי את app/main.py"
-  assistant: "TOOL: read_code ARGS: {\"file_path\": \"app/main.py\"}"
-
+  user: הצג לי את app/main.py
+  assistant: 'TOOL: read_code ARGS: {"file_path": "app/main.py"}'
+  audience: admin
+  required_capability: read_code
 - lang: he
-  user: "רשימת קבצים ב-app/tools"
-  assistant: "TOOL: list_files ARGS: {\"directory\": \"app/tools\"}"
-
+  user: רשימת קבצים ב-app/tools
+  assistant: 'TOOL: list_files ARGS: {"directory": "app/tools"}'
+  audience: admin
+  required_capability: list_files
 - lang: he
-  user: "מה אתה יכול לעשות?"
-  assistant: "אני העוזר האדמיניסטרטיבי. אני יכול לשאול יומן ביקורת, לקרוא צריכת טוקנים, להציג משתמשים, לבדוק טבלאות ורשומות במסד נתונים, להריץ את הסקרייפר, לחפש באינטרנט, לקרוא ולערוך קוד מקור, ולבצע כל פעולות הלוטו. מה תצטרך?"
-
-# ── Complex DB inspection ────────────────────────────────────
-
+  user: מה אתה יכול לעשות?
+  assistant: אני העוזר האדמיניסטרטיבי. אני יכול לשאול יומן ביקורת, לקרוא צריכת טוקנים, להציג משתמשים, לבדוק טבלאות ורשומות
+    במסד נתונים, להריץ את הסקרייפר, לחפש באינטרנט, לקרוא ולערוך קוד מקור, ולבצע כל פעולות הלוטו. מה תצטרך?
+  audience: admin
+  required_capability: null
 - lang: he
-  user: "כמה הודעות כל משתמש שלח?"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, COUNT(*) AS sessions, SUM(message_count) AS total_messages FROM agent.chat_sessions GROUP BY user_sub ORDER BY total_messages DESC\", \"limit\": 50}"
-
+  user: כמה הודעות כל משתמש שלח?
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT user_sub, COUNT(*) AS sessions, SUM(message_count) AS total_messages FROM
+    agent.chat_sessions GROUP BY user_sub ORDER BY total_messages DESC", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "הצג לי את השיחות הכי פעילות"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY message_count DESC LIMIT 20\", \"limit\": 20}"
-
+  user: הצג לי את השיחות הכי פעילות
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions
+    ORDER BY message_count DESC LIMIT 20", "limit": 20}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "מה יש בטבלת embeddings?"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT corpus, COUNT(*) AS chunks FROM agent.embeddings GROUP BY corpus ORDER BY corpus\", \"limit\": 50}"
-
+  user: מה יש בטבלת embeddings?
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT corpus, COUNT(*) AS chunks FROM agent.embeddings GROUP BY corpus ORDER
+    BY corpus", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "הצג לי את תצורות ה-LLM"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT id, name, provider, model, is_active, updated_by, updated_at FROM agent.llm_config ORDER BY id\", \"limit\": 50}"
-
+  user: הצג לי את תצורות ה-LLM
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT id, name, provider, model, is_active, updated_by, updated_at FROM agent.llm_config
+    ORDER BY id", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "הצג לי רק פעולות אדמין"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, action, details, ts FROM agent.audit_log WHERE tier = 'admin' ORDER BY ts DESC LIMIT 50\", \"limit\": 50}"
-
+  user: הצג לי רק פעולות אדמין
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT user_sub, action, details, ts FROM agent.audit_log WHERE tier = ''admin''
+    ORDER BY ts DESC LIMIT 50", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "צריכת טוקנים לפי מודל"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT model, SUM(prompt_tokens) AS prompt, SUM(completion_tokens) AS completion, SUM(cost_usd) AS cost, COUNT(*) AS calls FROM agent.token_usage GROUP BY model ORDER BY cost DESC\", \"limit\": 50}"
-
+  user: צריכת טוקנים לפי מודל
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT model, SUM(prompt_tokens) AS prompt, SUM(completion_tokens) AS completion,
+    SUM(cost_usd) AS cost, COUNT(*) AS calls FROM agent.token_usage GROUP BY model ORDER BY cost DESC", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "מי עולה הכי הרבה?"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT user_sub, tier, SUM(cost_usd) AS total_cost, COUNT(*) AS calls FROM agent.token_usage GROUP BY user_sub, tier ORDER BY total_cost DESC LIMIT 20\", \"limit\": 20}"
-
+  user: מי עולה הכי הרבה?
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT user_sub, tier, SUM(cost_usd) AS total_cost, COUNT(*) AS calls FROM agent.token_usage
+    GROUP BY user_sub, tier ORDER BY total_cost DESC LIMIT 20", "limit": 20}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "אילו סכמות קיימות?"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast') ORDER BY schema_name\", \"limit\": 50}"
-
+  user: אילו סכמות קיימות?
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN (''information_schema'',
+    ''pg_catalog'', ''pg_toast'') ORDER BY schema_name", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "אילו עמודות יש ב-chat_sessions?"
-  assistant: "TOOL: query_db ARGS: {\"sql\": \"SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'agent' AND table_name = 'chat_sessions' ORDER BY ordinal_position\", \"limit\": 50}"
-
-# ── Code inspection ──────────────────────────────────────────
-
+  user: אילו עמודות יש ב-chat_sessions?
+  assistant: 'TOOL: query_db ARGS: {"sql": "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE
+    table_schema = ''agent'' AND table_name = ''chat_sessions'' ORDER BY ordinal_position", "limit": 50}'
+  audience: admin
+  required_capability: query_db
 - lang: he
-  user: "הצג לי את גרף המפקח"
-  assistant: "TOOL: read_code ARGS: {\"file_path\": \"app/graphs/supervisor.py\"}"
-
+  user: הצג לי את גרף המפקח
+  assistant: 'TOOL: read_code ARGS: {"file_path": "app/graphs/supervisor.py"}'
+  audience: admin
+  required_capability: read_code
 - lang: he
-  user: "הצג לי את ה-RAG retriever"
-  assistant: "TOOL: read_code ARGS: {\"file_path\": \"app/rag/retriever.py\"}"
-
+  user: הצג לי את ה-RAG retriever
+  assistant: 'TOOL: read_code ARGS: {"file_path": "app/rag/retriever.py"}'
+  audience: admin
+  required_capability: read_code
 - lang: he
-  user: "רשימת קבצי גרף"
-  assistant: "TOOL: list_files ARGS: {\"directory\": \"app/graphs\"}"
-
-# ── Explain vs show me ───────────────────────────────────────
-
+  user: רשימת קבצי גרף
+  assistant: 'TOOL: list_files ARGS: {"directory": "app/graphs"}'
+  audience: admin
+  required_capability: list_files
 - lang: he
-  user: "מה יש ביומן הביקורת?"
-  assistant: "יומן הביקורת רושם פעולות אדמין — הפעלת סקרייפר, שאילתות מסד נתונים, עריכת קבצים, ופעולות אחרות. כל רשומה כוללת משתמש, דרגה, שם פעולה, פרטים (JSON), וחותמת זמן. תרצה שאציג לך את הרשומות האחרונות?"
-
+  user: מה יש ביומן הביקורת?
+  assistant: יומן הביקורת רושם פעולות אדמין — הפעלת סקרייפר, שאילתות מסד נתונים, עריכת קבצים, ופעולות אחרות. כל רשומה כוללת
+    משתמש, דרגה, שם פעולה, פרטים (JSON), וחותמת זמן. תרצה שאציג לך את הרשומות האחרונות?
+  audience: admin
+  required_capability: null
 - lang: he
-  user: "מה token_usage עוקב אחריו?"
-  assistant: "טבלת token_usage רושמת כל קריאת LLM — משתמש, דרגה, ספק, מודל, טוקני קלט, טוקני פלט, עלות בדולר, וחותמת זמן. תרצה שאציג את הצריכה הנוכחית?"
-
+  user: מה token_usage עוקב אחריו?
+  assistant: טבלת token_usage רושמת כל קריאת LLM — משתמש, דרגה, ספק, מודל, טוקני קלט, טוקני פלט, עלות בדולר, וחותמת זמן. תרצה
+    שאציג את הצריכה הנוכחית?
+  audience: admin
+  required_capability: null
 - lang: he
-  user: "איך טבלת embeddings עובדת?"
-  assistant: "טבלת embeddings מאחסנת וקטורי RAG. כל שורה כוללת קורפוס (docs, examples, lottery_history, user_data), טקסט, מטא-נתונים (JSON עם מקור והאש), ווקטור 768-ממדי. אחזור משתמש במרחק קוסינוס למציאת הקטעים הקרובים ביותר."
-
-# ── Refusal / boundary ───────────────────────────────────────
-
+  user: איך טבלת embeddings עובדת?
+  assistant: טבלת embeddings מאחסנת וקטורי RAG. כל שורה כוללת קורפוס (docs, examples, lottery_history, user_data), טקסט, מטא-נתונים
+    (JSON עם מקור והאש), ווקטור 768-ממדי. אחזור משתמש במרחק קוסינוס למציאת הקטעים הקרובים ביותר.
+  audience: admin
+  required_capability: null
 - lang: he
-  user: "מחק את כל יומן הביקורת"
-  assistant: "אני לא יכול למחוק רשומות ביקורת — זוהי פעולה הרסנית שלא חשופה דרך הכלים שלי. תצטרך להריץ DELETE ישירות. תרצה שאציג לך את הרשומות במקום?"
-
+  user: מחק את כל יומן הביקורת
+  assistant: אני לא יכול למחוק רשומות ביקורת — זוהי פעולה הרסנית שלא חשופה דרך הכלים שלי. תצטרך להריץ DELETE ישירות. תרצה
+    שאציג לך את הרשומות במקום?
+  audience: admin
+  required_capability: null
 - lang: he
-  user: "מחק את טבלת token_usage"
-  assistant: "אני לא יכול למחוק טבלאות — כלי query_db שלי הוא לקריאה בלבד (SELECT בלבד). תרצה שאציג לך מה יש בטבלה במקום?"
-
+  user: מחק את טבלת token_usage
+  assistant: אני לא יכול למחוק טבלאות — כלי query_db שלי הוא לקריאה בלבד (SELECT בלבד). תרצה שאציג לך מה יש בטבלה במקום?
+  audience: admin
+  required_capability: null
 - lang: he
-  user: "שנה את סיסמת האדמין"
-  assistant: "אני לא יכול לנהל סיסמאות משתמשים — זה מטופל על ידי Keycloak, לא על ידי הסוכן. אנא השתמש במסוף האדמין של Keycloak."
+  user: שנה את סיסמת האדמין
+  assistant: אני לא יכול לנהל סיסמאות משתמשים — זה מטופל על ידי Keycloak, לא על ידי הסוכן. אנא השתמש במסוף האדמין של Keycloak.
+  audience: admin
+  required_capability: null

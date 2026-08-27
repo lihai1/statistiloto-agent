@@ -39,7 +39,6 @@ tiers:
     rag_corpora:
       - docs
       - examples
-      - lottery_history
     daily_budget_usd: 5.0
   admin:
     recursion_limit: 50
@@ -61,9 +60,7 @@ tiers:
     rag_corpora:
       - docs
       - examples
-      - lottery_history
       - user_data               # admin sees ALL users' data (user_sub filter bypassed)
-      - ops_logs
     daily_budget_usd: 0.0       # admin = owner, no budget limit
 
 rag:

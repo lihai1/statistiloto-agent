@@ -5,6 +5,13 @@ never trusted to the LLM to self-scope.
 
 EXCEPTION: admin (owner/developer super-user) can see ALL users' user_data
 for support/debugging purposes — the user_sub filter is bypassed for admin.
+
+SECURITY: The 'examples' corpus is filtered by:
+  - audience: free/paid see only 'public' examples; admin sees 'public' + 'admin'.
+  - required_capability: if set, only retrievable if the capability is in the
+    tier's allowed_tools. Admin satisfies all required_capability checks.
+  - lang: examples are filtered to the user's language.
+Fail-closed: examples without audience metadata are NOT retrievable.
 """
 
 from __future__ import annotations
@@ -12,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from app.config.settings import get_settings
+from app.config.settings import get_settings, get_tier_config
 from app.rag.store import get_pool
 
 log = logging.getLogger(__name__)
@@ -43,6 +50,26 @@ def _get_embeddings_model():
         model=s.rag.embedding_model,
         base_url=s.llm.ollama.base_url,
     )
+
+
+def _audience_filter_for_tier(tier: str) -> list[str]:
+    """Return the list of audience values the tier is allowed to retrieve.
+
+    free/paid → ["public"]
+    admin     → ["public", "admin"]
+    """
+    if tier == "admin":
+        return ["public", "admin"]
+    return ["public"]
+
+
+def _allowed_capabilities_for_tier(tier: str) -> list[str]:
+    """Return the list of tool capabilities the tier is allowed to use.
+
+    Used to filter examples by required_capability. Admin satisfies all.
+    """
+    cfg = get_tier_config(tier)
+    return list(cfg.allowed_tools)
 
 
 def retrieve(
@@ -83,6 +110,10 @@ def retrieve(
     pool = get_pool()
     lang = (lang or "").strip().lower() or None
 
+    # Audience + capability filters for the examples corpus.
+    allowed_audiences = _audience_filter_for_tier(tier)
+    allowed_capabilities = _allowed_capabilities_for_tier(tier)
+
     # CRITICAL: user_data is ALWAYS filtered by user_sub from the JWT.
     # EXCEPTION: admin (owner/developer) can see ALL users' user_data.
     if "user_data" in corpora:
@@ -117,30 +148,42 @@ def retrieve(
         other_corpora = [c for c in corpora if c != "examples"]
 
         rows = []
-        if examples_corpora and lang:
-            with pool.connection() as conn:
-                ex_rows = conn.execute(
-                    """SELECT content, metadata, embedding <=> %s::vector AS dist
-                       FROM agent.embeddings
-                       WHERE corpus = 'examples'
-                         AND metadata->>'lang' = %s
-                         AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
-                       ORDER BY dist LIMIT %s""",
-                    (str(embedding), lang, user_sub, top_k),
-                ).fetchall()
-                rows.extend(ex_rows)
-        elif examples_corpora:
-            # No lang filter — return all examples (back-compat).
-            with pool.connection() as conn:
-                ex_rows = conn.execute(
-                    """SELECT content, metadata, embedding <=> %s::vector AS dist
-                       FROM agent.embeddings
-                       WHERE corpus = 'examples'
-                         AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
-                       ORDER BY dist LIMIT %s""",
-                    (str(embedding), user_sub, top_k),
-                ).fetchall()
-                rows.extend(ex_rows)
+        if examples_corpora:
+            # Build the examples query with audience + required_capability + lang filters.
+            # Fail-closed: examples without audience metadata are NOT retrievable.
+            # required_capability: null/missing → retrievable by all; set → only if in allowed_capabilities.
+            if lang:
+                with pool.connection() as conn:
+                    ex_rows = conn.execute(
+                        """SELECT content, metadata, embedding <=> %s::vector AS dist
+                           FROM agent.embeddings
+                           WHERE corpus = 'examples'
+                             AND metadata->>'lang' = %s
+                             AND metadata->>'audience' = ANY(%s)
+                             AND (metadata->>'required_capability' IS NULL
+                                  OR metadata->>'required_capability' = ANY(%s))
+                             AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
+                           ORDER BY dist LIMIT %s""",
+                        (str(embedding), lang, allowed_audiences,
+                         allowed_capabilities, user_sub, top_k),
+                    ).fetchall()
+                    rows.extend(ex_rows)
+            else:
+                # No lang filter — but still apply audience + capability filters.
+                with pool.connection() as conn:
+                    ex_rows = conn.execute(
+                        """SELECT content, metadata, embedding <=> %s::vector AS dist
+                           FROM agent.embeddings
+                           WHERE corpus = 'examples'
+                             AND metadata->>'audience' = ANY(%s)
+                             AND (metadata->>'required_capability' IS NULL
+                                  OR metadata->>'required_capability' = ANY(%s))
+                             AND (metadata->>'user_sub' IS NULL OR metadata->>'user_sub' = %s)
+                           ORDER BY dist LIMIT %s""",
+                        (str(embedding), allowed_audiences,
+                         allowed_capabilities, user_sub, top_k),
+                    ).fetchall()
+                    rows.extend(ex_rows)
 
         if other_corpora:
             with pool.connection() as conn:

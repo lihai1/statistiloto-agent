@@ -178,6 +178,48 @@ def ingest_docs(force: bool = False, docs_dir: Path | None = None) -> dict:
     }
 
 
+def _detect_tool_name(assistant_msg: str) -> str | None:
+    """Detect a tool name from a 'TOOL: <name> ARGS: ...' line in the assistant message."""
+    import re
+    if not assistant_msg:
+        return None
+    m = re.match(r"TOOL:\s*(\w+)", assistant_msg.strip(), re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _validate_example_pair(pair: dict, rel_name: str, index: int) -> None:
+    """Validate an example pair has required security metadata.
+
+    Raises ValueError (hard error) if:
+      - `audience` is missing (fail-closed: not retrievable without audience)
+      - `TOOL:` appears in the assistant message but `required_capability` is missing
+        (a TOOL example without required_capability could leak to unauthorized tiers)
+
+    Non-TOOL examples without `required_capability` are allowed (treated as null/generic).
+    """
+    audience = pair.get("audience")
+    if not audience:
+        raise ValueError(
+            f"{rel_name}[{index}]: missing 'audience' metadata — "
+            f"every example must declare audience (public or admin). "
+            f"Ingestion aborted (fail-closed)."
+        )
+    if audience not in ("public", "admin"):
+        raise ValueError(
+            f"{rel_name}[{index}]: invalid audience={audience!r} — "
+            f"must be 'public' or 'admin'. Ingestion aborted."
+        )
+
+    assistant_msg = (pair.get("assistant") or "").strip()
+    tool_name = _detect_tool_name(assistant_msg)
+    if tool_name and not pair.get("required_capability"):
+        raise ValueError(
+            f"{rel_name}[{index}]: assistant contains 'TOOL: {tool_name}' but "
+            f"'required_capability' is missing — TOOL examples must declare "
+            f"required_capability so RAG can filter by tier. Ingestion aborted (fail-closed)."
+        )
+
+
 def _format_example_chunk(pair: dict) -> str | None:
     """Format a single Q&A example pair into retrievable text.
 
@@ -293,10 +335,18 @@ def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> di
             log.warning("Skipping %s: expected a YAML list", rel_name)
             continue
 
+        # Validate each pair has required security metadata (fail-closed).
+        for i, pair in enumerate(pairs):
+            if not isinstance(pair, dict):
+                continue
+            _validate_example_pair(pair, rel_name, i)
+
         # Build chunk text for each example pair, preserving language,
         # context, and approval-flow metadata.
         chunks: list[str] = []
         chunk_langs: list[str] = []
+        chunk_audiences: list[str] = []
+        chunk_capabilities: list[str | None] = []
         for pair in pairs:
             if not isinstance(pair, dict):
                 continue
@@ -305,6 +355,8 @@ def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> di
                 continue
             chunks.append(chunk)
             chunk_langs.append((pair.get("lang") or "").strip())
+            chunk_audiences.append((pair.get("audience") or "").strip())
+            chunk_capabilities.append(pair.get("required_capability"))
 
         total_pairs += len(chunks)
         if not chunks:
@@ -316,7 +368,9 @@ def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> di
             log.error("Failed to embed examples for %s: %s", rel_name, e)
             continue
 
-        for chunk, vector, lang in zip(chunks, vectors, chunk_langs):
+        for chunk, vector, lang, audience, capability in zip(
+            chunks, vectors, chunk_langs, chunk_audiences, chunk_capabilities
+        ):
             chash = _content_hash(chunk)
             if chash in existing:
                 skipped += 1
@@ -328,6 +382,12 @@ def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> di
             }
             if lang:
                 metadata["lang"] = lang
+            if audience:
+                metadata["audience"] = audience
+            # required_capability: null for generic examples, tool name for TOOL examples.
+            # Stored as a string or explicitly absent (null is not stored by psycopg JSON).
+            if capability is not None:
+                metadata["required_capability"] = capability
             try:
                 index_document("examples", chunk, metadata, vector)
                 indexed += 1

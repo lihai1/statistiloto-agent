@@ -4,7 +4,7 @@
 
 ### Chat (SSE)
 
-- **FR-1**: The agent shall expose `POST /chat` accepting `{session_id, message, intent}` and returning either a `{response, thread_id}` JSON body or a `{paused: true, thread_id}` body when HITL is triggered.
+- **FR-1**: The agent shall expose `POST /chat` accepting `{session_id, message, intent, context, config_id, lang}` and returning either a `{response, thread_id}` JSON body or a `{paused: true, thread_id}` body when HITL is triggered. `config_id` optionally overrides the active LLM with a stored config for this request only. `lang` optionally hints the response language (`he`/`en`).
 - **FR-2**: Every chat request shall be authenticated via a JWT Bearer token in the `Authorization` header.
 - **FR-3**: The agent shall persist conversation state per `thread_id` (`{user_sub}:{session_id}`) using a PostgresSaver checkpointer, enabling multi-turn memory within a session.
 - **FR-4**: The agent shall apply a per-tier recursion limit to `graph.invoke()` to cap graph super-steps and prevent infinite loops.
@@ -40,6 +40,10 @@
 - **FR-41**: The agent shall expose `GET /llm-models?provider=...` (admin only) to list models available from a given provider. Ollama is queried live via its `/api/tags` endpoint; Gemini, OpenAI, and Anthropic return static model lists.
 - **FR-42**: The agent shall expose `POST /reindex` (admin only) to rebuild the `docs` RAG corpus by ingesting markdown from `app/rag/docs_source/` into `agent.embeddings` with content-hash dedup (unchanged chunks are skipped).
 - **FR-43**: The supervisor shall accept an optional structured `context` dict (page, selected numbers, groupSize, etc.) from the `/chat` request and forward it to worker subgraphs for grounding.
+- **FR-44**: The agent shall expose `PUT /llm-configs/{config_id}` (admin only) to update a stored LLM configuration (name, provider, model, base_url, api_key, request_timeout_seconds).
+- **FR-45**: The agent shall expose `GET /free-llm` (admin only) to read the free-tier LLM toggle (whether free-tier users receive LLM responses or a canned response) and `PUT /free-llm` (admin only) to set the toggle (`{ "enabled": true }`). The toggle defaults to disabled (free users get canned responses) and can be overridden at boot via the `FREE_LLM_ENABLED` env var.
+- **FR-46**: The `GET /llm-models` endpoint shall accept an optional `base_url` query param to list models from a non-default provider endpoint (e.g., a remote Ollama instance).
+- **FR-47**: The `/chat` endpoint shall accept an optional `config_id` to override the active LLM with a stored configuration for that request only (admin testing), and an optional `lang` hint (`he`/`en`) forwarded to worker subgraphs.
 
 ## Tier Requirements
 
@@ -68,7 +72,7 @@
 - Workers: all three (`nl_assistant`, `analyst`, `admin_ops`)
 - RAG corpora: `docs`, `lottery_history`, `user_data` (all users), `ops_logs`
 - Write tools: `save_numbers`, `trigger_scraper`, `edit_file` (all require HITL)
-- Read tools: all read tools including `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`
+- Read tools: all read tools including `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`, `list_db_tables`, `query_db`
 - HITL: on `save_numbers`, `trigger_scraper`, `edit_file`
 - Daily budget: $0 (no limit — owner)
 - Recursion limit: 50 super-steps
@@ -79,7 +83,7 @@
 
 - **TR-1**: All tools shall be classified as either `WRITE_TOOLS` or `READ_TOOLS` in `app/tools/registry.py` (frozensets).
 - **TR-2**: `WRITE_TOOLS` (`save_numbers`, `trigger_scraper`, `edit_file`) shall require HITL approval before executing — the graph interrupts automatically.
-- **TR-3**: `READ_TOOLS` (`generate_form`, `get_statistics`, `analyze`, `list_saved_numbers`, `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`) shall execute without HITL.
+- **TR-3**: `READ_TOOLS` (`generate_form`, `get_statistics`, `analyze`, `list_saved_numbers`, `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`, `list_db_tables`, `query_db`) shall execute without HITL.
 - **TR-4**: Tool availability shall be gated by tier — the supervisor downgrades disallowed intents to `nl_assistant`.
 - **TR-5**: Tools shall gracefully degrade when backend services are unavailable (empty `LOTTERY_GRPC_HOST` → tools return empty; empty `BFF_BASE_URL` → saved_numbers tools return empty).
 
@@ -92,6 +96,8 @@
 - **LR-5**: Supported providers: `ollama`, `gemini`, `mock` (for tests).
 - **LR-6**: `LLM_MOCK=true` shall use `FakeListChatModel` for testing without a real LLM.
 - **LR-7**: LLM request timeout shall be configurable via `LLM_REQUEST_TIMEOUT_SECONDS` (default 300s).
+- **LR-8**: A free-tier LLM toggle (admin-controlled via `GET/PUT /free-llm`) shall gate whether free-tier users receive LLM responses or a canned response. When disabled (default), free-tier `/chat` requests return a canned message without calling the LLM. Boot default overridable via `FREE_LLM_ENABLED` env var.
+- **LR-9**: A per-request LLM override (`config_id` on `/chat`) shall allow admin to test a stored configuration for a single request without changing the active config.
 
 ## RAG Requirements
 
@@ -109,7 +115,7 @@
 - **SR-2**: JWT validation shall verify the signature against Keycloak JWKS (`RS256` algorithm) when `JWT_VERIFY=true`.
 - **SR-3**: In dev/test mode (`JWT_VERIFY=false`), the agent shall decode the JWT without signature verification but still extract claims.
 - **SR-4**: Tier shall be extracted from JWT claims with priority: explicit `tier` claim > group membership (`/admins`, `/paid`, `/users`) > realm roles > `free`.
-- **SR-5**: Admin-only endpoints (`PUT /llm-config`, `GET /llm-configs`, `POST /llm-configs`, `PUT /llm-configs/{config_id}/activate`, `POST /llm-configs/{config_id}/test`, `DELETE /llm-configs/{config_id}`, `GET /llm-models`, `GET /token-usage`, `GET /audit-log`, `POST /reindex`) shall require admin — `require_admin()` raises `JWTError` for non-admin tiers.
+- **SR-5**: Admin-only endpoints (`PUT /llm-config`, `GET /llm-configs`, `POST /llm-configs`, `PUT /llm-configs/{config_id}` (update), `PUT /llm-configs/{config_id}/activate`, `POST /llm-configs/{config_id}/test`, `DELETE /llm-configs/{config_id}`, `GET /llm-models`, `GET /free-llm`, `PUT /free-llm`, `GET /token-usage`, `GET /audit-log`, `POST /reindex`) shall require admin — `require_admin()` raises `JWTError` for non-admin tiers.
 - **SR-6**: The raw JWT token shall be passed through to tools (e.g., `save_numbers` forwards it to the Java BFF for backend authorization).
 
 ## Metering Requirements

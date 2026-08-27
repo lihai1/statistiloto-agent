@@ -111,7 +111,18 @@ class TestHttpSanity:
 # ── Free tier: nl_assistant (docs-only RAG, no tools) ────────
 
 class TestFreeUserFlow:
-    """Free user conversations — nl_assistant, docs-only retrieval, no tools."""
+    """Free user conversations — nl_assistant, docs-only retrieval, no tools.
+
+    These e2e_llm tests exercise the real LLM path for free users, so the
+    free-tier LLM toggle is enabled for the whole class.
+    """
+
+    @pytest.fixture(autouse=True)
+    def enable_free_llm(self):
+        from app.free_tier_llm import set_free_llm_enabled, reset_free_llm_toggle
+        set_free_llm_enabled(True)
+        yield
+        reset_free_llm_toggle()
 
     @pytest.mark.timeout(_TIMEOUT)
     def test_related_lottery_question(self):

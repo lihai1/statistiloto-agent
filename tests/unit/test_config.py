@@ -47,7 +47,10 @@ class TestSettings:
         cfg = get_tier_config("paid")
         assert cfg.recursion_limit == 25
         assert "save_numbers" in cfg.allowed_tools
-        assert "lottery_history" in cfg.rag_corpora
+        assert "docs" in cfg.rag_corpora
+        assert "examples" in cfg.rag_corpora
+        # lottery_history removed in Phase 4 — no production indexing code.
+        assert "lottery_history" not in cfg.rag_corpora
         assert cfg.daily_budget_usd == 5.0
 
     def test_admin_tier_caps(self):
@@ -55,8 +58,9 @@ class TestSettings:
         cfg = get_tier_config("admin")
         assert cfg.recursion_limit == 50
         assert "trigger_scraper" in cfg.allowed_tools
-        assert "ops_logs" in cfg.rag_corpora
         assert "user_data" in cfg.rag_corpora
+        # ops_logs removed in Phase 4 — no production indexing code.
+        assert "ops_logs" not in cfg.rag_corpora
         # Admin is the owner — no budget limit
         assert cfg.daily_budget_usd == 0.0
 

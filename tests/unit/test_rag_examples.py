@@ -9,6 +9,8 @@ import pytest
 from app.rag.ingest import (
     _format_example_chunk,
     _discover_example_files,
+    _validate_example_pair,
+    _detect_tool_name,
     EXAMPLES_DIR,
 )
 
@@ -203,3 +205,186 @@ class TestShippedCorpusStructure:
                     assert pair["approval"] in {"approved", "rejected"}, (
                         f"{rel}[{i}] invalid approval: {pair['approval']!r}"
                     )
+
+
+class TestShippedCorpusSecurityMetadata:
+    """Validate the shipped YAML files have audience + required_capability metadata."""
+
+    @classmethod
+    @pytest.fixture(scope="class")
+    def shipped_files(cls):
+        if not EXAMPLES_DIR.exists():
+            pytest.skip("examples_source/ not present")
+        return _discover_example_files(EXAMPLES_DIR)
+
+    def test_all_examples_have_audience(self, shipped_files):
+        """Every shipped example must declare an audience (public or admin)."""
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                audience = pair.get("audience")
+                assert audience in {"public", "admin"}, (
+                    f"{rel}[{i}] missing/invalid audience: {audience!r}"
+                )
+
+    def test_tool_examples_have_required_capability(self, shipped_files):
+        """Every example with a TOOL: line in assistant must have required_capability set."""
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                assistant = pair.get("assistant", "")
+                tool = _detect_tool_name(assistant)
+                if tool:
+                    cap = pair.get("required_capability")
+                    assert cap == tool, (
+                        f"{rel}[{i}] has TOOL:{tool} but required_capability={cap!r}"
+                    )
+
+    def test_non_tool_examples_have_null_or_missing_capability(self, shipped_files):
+        """Non-TOOL examples should have required_capability=null or missing."""
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                assistant = pair.get("assistant", "")
+                tool = _detect_tool_name(assistant)
+                if not tool:
+                    cap = pair.get("required_capability")
+                    # null or missing is fine; a tool name would be wrong
+                    if cap is not None:
+                        assert cap not in {
+                            "generate_form", "get_statistics", "analyze",
+                            "save_numbers", "list_saved_numbers", "trigger_scraper",
+                            "query_audit_log", "read_token_usage", "search_web",
+                            "read_code", "list_files", "edit_file",
+                            "list_db_tables", "query_db",
+                        }, (
+                            f"{rel}[{i}] is non-TOOL but has required_capability={cap!r}"
+                        )
+
+    def test_admin_tool_examples_have_admin_audience(self, shipped_files):
+        """Examples for admin-only tools must have audience=admin."""
+        admin_tools = {
+            "trigger_scraper", "edit_file", "query_audit_log", "read_token_usage",
+            "search_web", "read_code", "list_files", "list_db_tables", "query_db",
+        }
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                cap = pair.get("required_capability")
+                if cap in admin_tools:
+                    assert pair.get("audience") == "admin", (
+                        f"{rel}[{i}] has admin-only required_capability={cap} "
+                        f"but audience={pair.get('audience')!r}"
+                    )
+
+    def test_free_yaml_has_no_stale_refusals(self, shipped_files):
+        """free.yaml must NOT contain stale refusal examples for generate/analyze.
+
+        Free tier CAN use generate_form, get_statistics, and analyze per agent.yaml.
+        The old stale examples incorrectly refused these operations.
+        """
+        for f in shipped_files:
+            rel = f.relative_to(EXAMPLES_DIR)
+            if not rel.name == "free.yaml":
+                continue
+            with open(f, encoding="utf-8") as fh:
+                pairs = yaml.safe_load(fh)
+            for i, pair in enumerate(pairs):
+                assistant = (pair.get("assistant") or "").lower()
+                # Must NOT contain stale refusal phrases
+                stale_phrases = [
+                    "i can't generate forms",
+                    "i can't run analysis",
+                    "form generation requires a paid subscription",
+                    "number analysis requires a paid subscription",
+                    "i can't retrieve live statistics",
+                ]
+                for phrase in stale_phrases:
+                    assert phrase not in assistant, (
+                        f"{rel}[{i}] contains stale refusal phrase: {phrase!r}"
+                    )
+
+
+class TestValidateExamplePair:
+    """Test the fail-closed validation for example pairs."""
+
+    def test_missing_audience_raises(self):
+        """Ingestion must FAIL if audience is missing."""
+        pair = {"user": "Hi", "assistant": "Hello"}
+        with pytest.raises(ValueError, match="audience"):
+            _validate_example_pair(pair, "en/test.yaml", 0)
+
+    def test_invalid_audience_raises(self):
+        """Ingestion must FAIL if audience is not 'public' or 'admin'."""
+        pair = {"user": "Hi", "assistant": "Hello", "audience": "internal"}
+        with pytest.raises(ValueError, match="invalid audience"):
+            _validate_example_pair(pair, "en/test.yaml", 0)
+
+    def test_tool_without_required_capability_raises(self):
+        """Ingestion must FAIL if TOOL: appears but required_capability is missing."""
+        pair = {
+            "user": "Show me stats",
+            "assistant": 'TOOL: get_statistics ARGS: {"group_size": 2}',
+            "audience": "public",
+        }
+        with pytest.raises(ValueError, match="required_capability"):
+            _validate_example_pair(pair, "en/test.yaml", 0)
+
+    def test_tool_with_matching_required_capability_passes(self):
+        """TOOL example with correct required_capability passes validation."""
+        pair = {
+            "user": "Show me stats",
+            "assistant": 'TOOL: get_statistics ARGS: {"group_size": 2}',
+            "audience": "public",
+            "required_capability": "get_statistics",
+        }
+        _validate_example_pair(pair, "en/test.yaml", 0)  # should not raise
+
+    def test_non_tool_without_required_capability_passes(self):
+        """Non-TOOL example without required_capability passes validation."""
+        pair = {
+            "user": "What are hot numbers?",
+            "assistant": "Hot numbers are...",
+            "audience": "public",
+        }
+        _validate_example_pair(pair, "en/test.yaml", 0)  # should not raise
+
+    def test_non_tool_with_null_required_capability_passes(self):
+        """Non-TOOL example with required_capability=null passes validation."""
+        pair = {
+            "user": "What are hot numbers?",
+            "assistant": "Hot numbers are...",
+            "audience": "public",
+            "required_capability": None,
+        }
+        _validate_example_pair(pair, "en/test.yaml", 0)  # should not raise
+
+
+class TestDetectToolName:
+    """Test the TOOL: line detection helper."""
+
+    def test_detects_tool_with_args(self):
+        assert _detect_tool_name('TOOL: get_statistics ARGS: {"group_size": 2}') == "get_statistics"
+
+    def test_detects_tool_without_args(self):
+        assert _detect_tool_name("TOOL: save_numbers") == "save_numbers"
+
+    def test_detects_tool_case_insensitive(self):
+        assert _detect_tool_name("tool: analyze ARGS: {}") == "analyze"
+
+    def test_returns_none_for_plain_text(self):
+        assert _detect_tool_name("Hot numbers are...") is None
+
+    def test_returns_none_for_empty(self):
+        assert _detect_tool_name("") is None
+
+    def test_returns_none_for_none(self):
+        assert _detect_tool_name(None) is None

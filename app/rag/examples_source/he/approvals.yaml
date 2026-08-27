@@ -1,115 +1,115 @@
 # Hebrew approval flow examples — HITL (human-in-the-loop) operations.
-# These teach the LLM the expected behavior for write tools that require approval.
-#
-# Flow: user requests a write operation → LLM emits TOOL: line → graph pauses
-# for HITL → user approves or rejects → agent responds accordingly.
-#
-# Fields:
-#   user:        the initial user request
-#   assistant:   the TOOL: line the LLM should emit (draft step)
-#   approval:    "approved" or "rejected" — what the user chose
-#   final:       the expected response after approval/rejection is processed
-#   lang:        language code
-
-# ── save_numbers: approved ───────────────────────────────────
+# lang: he
 
 - lang: he
-  user: "שמור את המספרים 1, 2, 3, 4, 5, 6 כבחירה שלי"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
-  approval: "approved"
-  final: "שמרתי את המספרים שלך: 1, 2, 3, 4, 5, 6. אפשר לראות אותם בכל עת מהמספרים השמורים."
-
+  user: שמור את המספרים 1, 2, 3, 4, 5, 6 כבחירה שלי
+  assistant: 'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [1, 2, 3, 4, 5, 6]}'
+  approval: approved
+  final: 'שמרתי את המספרים שלך: 1, 2, 3, 4, 5, 6. אפשר לראות אותם בכל עת מהמספרים השמורים.'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "שמור את 7, 11, 17, 24, 31, 36 כמועדפים"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
-  approval: "approved"
-  final: "שמרתי את המועדפים שלך: 7, 11, 17, 24, 31, 36."
-
+  user: שמור את 7, 11, 17, 24, 31, 36 כמועדפים
+  assistant: 'TOOL: save_numbers ARGS: {"category": "favorites", "numbers": [7, 11, 17, 24, 31, 36]}'
+  approval: approved
+  final: 'שמרתי את המועדפים שלך: 7, 11, 17, 24, 31, 36.'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "שמור את המספרים האלה 5, 12, 23, 34, 38, 42"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [5, 12, 23, 34, 38, 42]}"
-  approval: "approved"
-  final: "שמרתי את המספרים שלך: 5, 12, 23, 34, 38, 42."
-
+  user: שמור את המספרים האלה 5, 12, 23, 34, 38, 42
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [5, 12, 23, 34, 38, 42]}'
+  approval: approved
+  final: 'שמרתי את המספרים שלך: 5, 12, 23, 34, 38, 42.'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "שמור אותם כמועדפים"
-  context: {"page": "analyze", "numbers": [7, 11, 17, 24, 31, 36]}
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"favorites\", \"numbers\": [7, 11, 17, 24, 31, 36]}"
-  approval: "approved"
-  final: "שמרתי את המועדפים שלך: 7, 11, 17, 24, 31, 36."
-
-# ── save_numbers: rejected ───────────────────────────────────
-
+  user: שמור אותם כמועדפים
+  context:
+    page: analyze
+    numbers:
+    - 7
+    - 11
+    - 17
+    - 24
+    - 31
+    - 36
+  assistant: 'TOOL: save_numbers ARGS: {"category": "favorites", "numbers": [7, 11, 17, 24, 31, 36]}'
+  approval: approved
+  final: 'שמרתי את המועדפים שלך: 7, 11, 17, 24, 31, 36.'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "שמור את 1, 2, 3, 4, 5, 6 כבחירה שלי"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
-  approval: "rejected"
-  final: "השמירה בוטלה. המספרים שלך לא נשמרו. תרצה לנסות שוב עם סט אחר?"
-
+  user: שמור את 1, 2, 3, 4, 5, 6 כבחירה שלי
+  assistant: 'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [1, 2, 3, 4, 5, 6]}'
+  approval: rejected
+  final: השמירה בוטלה. המספרים שלך לא נשמרו. תרצה לנסות שוב עם סט אחר?
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "שמור את 9, 14, 21, 28, 35, 42"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [9, 14, 21, 28, 35, 42]}"
-  approval: "rejected"
-  final: "השמירה בוטלה. המספרים 9, 14, 21, 28, 35, 42 לא נשמרו."
-
-# ── trigger_scraper: approved ────────────────────────────────
-
+  user: שמור את 9, 14, 21, 28, 35, 42
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [9, 14, 21, 28, 35, 42]}'
+  approval: rejected
+  final: השמירה בוטלה. המספרים 9, 14, 21, 28, 35, 42 לא נשמרו.
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "הרץ את הסקרייפר"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-  approval: "approved"
-  final: "הסקרייפר הופעל בהצלחה. נתוני ההגרלות יתעדכנו בקרוב. אפשר לבדוק ביומן הביקורת את סטטוס ההשלמה."
-
+  user: הרץ את הסקרייפר
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  approval: approved
+  final: הסקרייפר הופעל בהצלחה. נתוני ההגרלות יתעדכנו בקרוב. אפשר לבדוק ביומן הביקורת את סטטוס ההשלמה.
+  audience: admin
+  required_capability: trigger_scraper
 - lang: he
-  user: "רענן את נתוני ההגרלות"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-  approval: "approved"
-  final: "הסקרייפר הופעל. נתוני הגרלות חדשים יהיו זמינים לאחר השלמת הסריקה."
-
-# ── trigger_scraper: rejected ────────────────────────────────
-
+  user: רענן את נתוני ההגרלות
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  approval: approved
+  final: הסקרייפר הופעל. נתוני הגרלות חדשים יהיו זמינים לאחר השלמת הסריקה.
+  audience: admin
+  required_capability: trigger_scraper
 - lang: he
-  user: "הרץ את הסקרייפר"
-  assistant: "TOOL: trigger_scraper ARGS: {}"
-  approval: "rejected"
-  final: "הפעלת הסקרייפר בוטלה. נתוני ההגרלות לא רועננו."
-
-# ── edit_file: approved ──────────────────────────────────────
-
+  user: הרץ את הסקרייפר
+  assistant: 'TOOL: trigger_scraper ARGS: {}'
+  approval: rejected
+  final: הפעלת הסקרייפר בוטלה. נתוני ההגרלות לא רועננו.
+  audience: admin
+  required_capability: trigger_scraper
 - lang: he
-  user: "ערוך את app/main.py והחלף hello ב-hi"
-  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}"
-  approval: "approved"
-  final: "הקובץ app/main.py עודכן בהצלחה. החלפתי 'hello' ב-'hi'."
-
-# ── edit_file: rejected ──────────────────────────────────────
-
+  user: ערוך את app/main.py והחלף hello ב-hi
+  assistant: 'TOOL: edit_file ARGS: {"file_path": "app/main.py", "old_string": "hello", "new_string": "hi"}'
+  approval: approved
+  final: הקובץ app/main.py עודכן בהצלחה. החלפתי 'hello' ב-'hi'.
+  audience: admin
+  required_capability: edit_file
 - lang: he
-  user: "ערוך את app/main.py והחלף hello ב-hi"
-  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/main.py\", \"old_string\": \"hello\", \"new_string\": \"hi\"}"
-  approval: "rejected"
-  final: "עריכת הקובץ בוטלה. app/main.py לא שונה."
-
+  user: ערוך את app/main.py והחלף hello ב-hi
+  assistant: 'TOOL: edit_file ARGS: {"file_path": "app/main.py", "old_string": "hello", "new_string": "hi"}'
+  approval: rejected
+  final: עריכת הקובץ בוטלה. app/main.py לא שונה.
+  audience: admin
+  required_capability: edit_file
 - lang: he
-  user: "החלף את טקסט הפתיחה ב-app/prompts.py"
-  assistant: "TOOL: edit_file ARGS: {\"file_path\": \"app/prompts.py\", \"old_string\": \"welcome\", \"new_string\": \"hello\"}"
-  approval: "rejected"
-  final: "העריכה נדחתה. app/prompts.py לא שונה."
-
-# ── Approval conversation flow (multi-turn) ──────────────────
-
+  user: החלף את טקסט הפתיחה ב-app/prompts.py
+  assistant: 'TOOL: edit_file ARGS: {"file_path": "app/prompts.py", "old_string": "welcome", "new_string": "hello"}'
+  approval: rejected
+  final: העריכה נדחתה. app/prompts.py לא שונה.
+  audience: admin
+  required_capability: edit_file
 - lang: he
-  user: "שמור את 3, 7, 15, 22, 29, 37 כמספרים שלי"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"lucky\", \"numbers\": [3, 7, 15, 22, 29, 37]}"
-  approval: "approved"
-  final: "שמרתי את המספרים שלך: 3, 7, 15, 22, 29, 37."
-
+  user: שמור את 3, 7, 15, 22, 29, 37 כמספרים שלי
+  assistant: 'TOOL: save_numbers ARGS: {"category": "lucky", "numbers": [3, 7, 15, 22, 29, 37]}'
+  approval: approved
+  final: 'שמרתי את המספרים שלך: 3, 7, 15, 22, 29, 37.'
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "עכשיו גם שמור את 1, 2, 3, 4, 5, 6"
-  assistant: "TOOL: save_numbers ARGS: {\"category\": \"default\", \"numbers\": [1, 2, 3, 4, 5, 6]}"
-  approval: "rejected"
-  final: "השמירה בוטלה עבור 1, 2, 3, 4, 5, 6. המספרים הקודמים שלך עדיין שמורים."
-
+  user: עכשיו גם שמור את 1, 2, 3, 4, 5, 6
+  assistant: 'TOOL: save_numbers ARGS: {"category": "default", "numbers": [1, 2, 3, 4, 5, 6]}'
+  approval: rejected
+  final: השמירה בוטלה עבור 1, 2, 3, 4, 5, 6. המספרים הקודמים שלך עדיין שמורים.
+  audience: public
+  required_capability: save_numbers
 - lang: he
-  user: "הצג לי מה שמור לי"
-  assistant: "TOOL: list_saved_numbers ARGS: {}"
+  user: הצג לי מה שמור לי
+  assistant: 'TOOL: list_saved_numbers ARGS: {}'
+  audience: public
+  required_capability: list_saved_numbers
