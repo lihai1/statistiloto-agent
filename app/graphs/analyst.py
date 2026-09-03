@@ -65,6 +65,10 @@ def draft_analysis(state: AnalystState) -> dict:
     hist_len = len(state.get("history", []))
     log.info("[analyst.draft] START user=%s session=%s history_len=%d", user_sub, session_id, hist_len)
     try:
+        from app.llm.config_store import get_llm_with_tools
+        from app.tools.registry import get_tool_definitions
+        from app.graphs.tool_parser import parse_tool_call_native
+
         llm = get_llm()
         cfg = get_tier_config(state["tier"])
         tools_str = ", ".join(cfg.allowed_tools)
@@ -79,10 +83,20 @@ def draft_analysis(state: AnalystState) -> dict:
             authorized_tools=tools_str,
             history=hist,
         )
-        resp = llm.invoke(prompt)
+
+        # Try native function calling first (bind_tools), fall back to text parsing.
+        # Only pass tools that the user's tier is authorized for.
+        all_defs = get_tool_definitions()
+        authorized_defs = [d for d in all_defs if d["name"] in cfg.allowed_tools]
+        llm_with_tools = get_llm_with_tools(llm, authorized_defs)
+        resp = llm_with_tools.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
 
-        planned_tool, tool_args = parse_tool_call(content)
+        # Try native parsing first (from AIMessage.tool_calls), fall back to text.
+        planned_tool, tool_args = parse_tool_call_native(resp)
+        if planned_tool is None:
+            # No native tool call — try text-based parsing.
+            planned_tool, tool_args = parse_tool_call(content)
         if planned_tool and planned_tool.lower() == "none":
             planned_tool = "none"
 

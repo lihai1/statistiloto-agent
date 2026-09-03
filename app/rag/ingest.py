@@ -93,7 +93,15 @@ def _get_existing_hashes(corpus: str = "docs") -> set[str]:
                 (corpus,),
             ).fetchall()
             for row in rows:
-                meta = json.loads(row[0]) if row[0] else {}
+                # psycopg returns jsonb columns as dicts; handle both dict and
+                # JSON string to be robust across driver versions.
+                val = row[0]
+                if isinstance(val, str):
+                    meta = json.loads(val) if val else {}
+                elif isinstance(val, dict):
+                    meta = val
+                else:
+                    meta = {}
                 h = meta.get("content_hash")
                 if h:
                     hashes.add(h)
@@ -143,23 +151,28 @@ def ingest_docs(force: bool = False, docs_dir: Path | None = None) -> dict:
         chunks = [header + c for c in raw_chunks]
         total_chunks += len(chunks)
 
-        # Embed all chunks for this file at once
+        # Compute hashes first and filter to only new chunks BEFORE embedding.
+        # This avoids redundant Ollama embedding calls for content that is
+        # already indexed (the common case on restart when nothing changed).
+        chunk_hashes = [_content_hash(c) for c in chunks]
+        new_pairs = [(c, h, i) for i, (c, h) in enumerate(zip(chunks, chunk_hashes)) if h not in existing]
+        if not new_pairs:
+            skipped += len(chunks)
+            continue
+
+        new_chunks = [p[0] for p in new_pairs]
         try:
-            vectors = embeddings.embed_documents(chunks)
+            vectors = embeddings.embed_documents(new_chunks)
         except Exception as e:
             log.error("Failed to embed chunks for %s: %s", md_file.name, e)
             continue
 
-        for chunk, vector in zip(chunks, vectors):
-            chash = _content_hash(chunk)
-            if chash in existing:
-                skipped += 1
-                continue
+        for (chunk, chash, orig_idx), vector in zip(new_pairs, vectors):
             metadata = {
                 "source": md_file.name,
                 "title": title,
                 "content_hash": chash,
-                "chunk_index": total_chunks - len(chunks) + chunks.index(chunk),
+                "chunk_index": total_chunks - len(chunks) + orig_idx,
             }
             try:
                 index_document("docs", chunk, metadata, vector)
@@ -167,6 +180,8 @@ def ingest_docs(force: bool = False, docs_dir: Path | None = None) -> dict:
                 existing.add(chash)
             except Exception as e:
                 log.error("Failed to index chunk from %s: %s", md_file.name, e)
+
+        skipped += len(chunks) - len(new_pairs)
 
     log.info("Ingestion complete: indexed=%d skipped=%d total_chunks=%d files=%d",
              indexed, skipped, total_chunks, len(md_files))
@@ -362,19 +377,27 @@ def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> di
         if not chunks:
             continue
 
+        # Compute hashes first and filter to only new chunks BEFORE embedding.
+        # Avoids redundant Ollama embedding calls for already-indexed examples.
+        chunk_hashes = [_content_hash(c) for c in chunks]
+        new_indices = [i for i, h in enumerate(chunk_hashes) if h not in existing]
+        if not new_indices:
+            skipped += len(chunks)
+            continue
+
+        new_chunks = [chunks[i] for i in new_indices]
         try:
-            vectors = embeddings.embed_documents(chunks)
+            vectors = embeddings.embed_documents(new_chunks)
         except Exception as e:
             log.error("Failed to embed examples for %s: %s", rel_name, e)
             continue
 
-        for chunk, vector, lang, audience, capability in zip(
-            chunks, vectors, chunk_langs, chunk_audiences, chunk_capabilities
-        ):
-            chash = _content_hash(chunk)
-            if chash in existing:
-                skipped += 1
-                continue
+        for idx, vector in zip(new_indices, vectors):
+            chunk = chunks[idx]
+            chash = chunk_hashes[idx]
+            lang = chunk_langs[idx]
+            audience = chunk_audiences[idx]
+            capability = chunk_capabilities[idx]
             metadata = {
                 "source": rel_name,
                 "content_hash": chash,
@@ -394,6 +417,8 @@ def ingest_examples(force: bool = False, examples_dir: Path | None = None) -> di
                 existing.add(chash)
             except Exception as e:
                 log.error("Failed to index example from %s: %s", rel_name, e)
+
+        skipped += len(chunks) - len(new_indices)
 
     log.info("Examples ingestion complete: indexed=%d skipped=%d total_pairs=%d files=%d",
              indexed, skipped, total_pairs, len(yaml_files))

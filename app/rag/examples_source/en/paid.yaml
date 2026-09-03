@@ -212,3 +212,99 @@
     generate forms, and manage saved numbers. To buy a ticket, please visit the official lottery website.
   audience: public
   required_capability: null
+
+# ── UI-constructed prompts (sent by Angular via AgentContextService.ask) ──
+# These match the exact prompt templates built in the UI components.
+# Prompts with numbers in context → analyze tool.
+# Prompts without numbers → ask the user to provide them.
+
+# 1. Generate tab — no numbers in context → ask for the forms
+- lang: en
+  user: I just generated 3 lottery forms. Can you analyze them and tell me which one has the best historical coverage?
+  assistant: I'd be happy to help analyze your generated forms! Could you share the specific numbers from the forms you'd
+    like me to analyze?
+  audience: public
+  required_capability: null
+# 2. Statistics tab — no numbers in context → ask which group size
+- lang: en
+  user: I found 10 frequent number groups in the statistics. Which of these groups has the highest historical frequency?
+  assistant: Could you tell me which group size you're interested in? I can check the statistics for you with the lottery service.
+  audience: public
+  required_capability: null
+# 3. Analyze tab — context has numbers → analyze
+- lang: en
+  user: I analyzed the numbers 7, 11, 17, 24, 31, 36 against historical draws. Can you summarize the frequency results and
+    suggest which number combinations appear most often?
+  context:
+    page: analyze
+    numbers:
+    - 7
+    - 11
+    - 17
+    - 24
+    - 31
+    - 36
+  assistant: 'TOOL: analyze ARGS: {"form": [7, 11, 17, 24, 31, 36]}'
+  audience: public
+  required_capability: analyze
+# 4. Simulate tab — context has numbers, no simulate tool → analyze
+- lang: en
+  user: "I simulated the ticket 5, 12, 23, 34, 38 (strong 7): net -150 across 500 draws. What should I try next?"
+  context:
+    page: simulate
+    numbers:
+    - 5
+    - 12
+    - 23
+    - 34
+    - 38
+    - 7
+  assistant: 'TOOL: analyze ARGS: {"form": [5, 12, 23, 34, 38]}'
+  audience: public
+  required_capability: analyze
+# 5. Build Form Flow — numbers in message + context → analyze
+- lang: en
+  user: I just generated 3 lottery forms with the coach. The one I like is 5, 12, 23, 34, 38, 7. Which has the best historical
+    coverage?
+  context:
+    page: generate
+    numbers:
+    - 5
+    - 12
+    - 23
+    - 34
+    - 38
+    - 7
+  assistant: 'TOOL: analyze ARGS: {"form": [5, 12, 23, 34, 38, 7]}'
+  audience: public
+  required_capability: analyze
+# 6. Analyze Flow — context has numbers → analyze
+- lang: en
+  user: I analyzed the numbers 3, 7, 15, 22, 29, 37 with the coach. Summarize the strengths and weaknesses of this set.
+  context:
+    page: analyze
+    numbers:
+    - 3
+    - 7
+    - 15
+    - 22
+    - 29
+    - 37
+  assistant: 'TOOL: analyze ARGS: {"form": [3, 7, 15, 22, 29, 37]}'
+  audience: public
+  required_capability: analyze
+# 7. Backtest Flow — context has numbers, no simulate tool → analyze
+- lang: en
+  user: "I backtested the ticket 5, 12, 23, 34, 38 (strong 7): spent 500, won 350, net -150 across 500 draws. How can I improve it?"
+  context:
+    page: simulate
+    numbers:
+    - 5
+    - 12
+    - 23
+    - 34
+    - 38
+    - 7
+  assistant: 'TOOL: analyze ARGS: {"form": [5, 12, 23, 34, 38]}'
+  audience: public
+  required_capability: analyze

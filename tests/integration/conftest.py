@@ -26,7 +26,7 @@ os.environ.setdefault("JWT_VERIFY", "false")
 os.environ.setdefault("LLM_MOCK", "true")
 os.environ.setdefault("LLM_PROVIDER", "ollama")
 os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")
-os.environ.setdefault("DB_URI", "postgresql://postgres:postgres@localhost:5433/statistiloto")
+os.environ.setdefault("DB_URI", "postgresql://statistiloto:change-me-in-prod@db:5432/statistiloto")
 os.environ.setdefault("LOTTERY_GRPC_HOST", "")  # no Go service in tests
 os.environ.setdefault("BFF_BASE_URL", "")       # no Java BFF in tests
 
@@ -43,7 +43,7 @@ from app.main import app, set_graph, reset_graph
 
 # ── DB fixtures ──────────────────────────────────────────────
 
-DB_URI = "postgresql://postgres:postgres@localhost:5433/statistiloto"
+DB_URI = "postgresql://statistiloto:change-me-in-prod@db:5432/statistiloto"
 
 
 @pytest.fixture(scope="session")

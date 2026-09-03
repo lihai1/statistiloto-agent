@@ -95,6 +95,12 @@ class FreeTierConfig:
 
 
 @dataclass
+class ToolsConfig:
+    cache_ttl_seconds: int = 300   # 5 minutes
+    cache_max_size: int = 100
+
+
+@dataclass
 class Settings:
     llm: LLMConfig = field(default_factory=LLMConfig)
     tiers: dict[str, TierConfig] = field(default_factory=dict)
@@ -106,6 +112,7 @@ class Settings:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     free_tier: FreeTierConfig = field(default_factory=FreeTierConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
 
 
 def _load_yaml() -> dict:
@@ -226,10 +233,17 @@ def _build_settings(data: dict) -> Settings:
     free_tier_data = data.get("free_tier", {})
     free_tier = FreeTierConfig(llm_enabled=free_tier_data.get("llm_enabled", False))
 
+    tools_data = data.get("tools", {})
+    tools = ToolsConfig(
+        cache_ttl_seconds=tools_data.get("cache_ttl_seconds", 300),
+        cache_max_size=tools_data.get("cache_max_size", 100),
+    )
+
     return Settings(
         llm=llm, tiers=tiers, rag=rag, hitl=hitl,
         lottery_grpc=lottery_grpc, bff=bff, database=database,
         security=security, logging=logging_cfg, free_tier=free_tier,
+        tools=tools,
     )
 
 

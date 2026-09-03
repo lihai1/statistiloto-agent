@@ -187,8 +187,20 @@ class LLMConfigStore:
         return build_llm(cfg, mock_responses=self._mock_responses)
 
     def _refresh(self):
-        """Reload config from DB (or boot default) and rebuild the LLM."""
+        """Reload config from DB (or boot default) and rebuild the LLM.
+
+        Skips the rebuild (and the INFO log) when the effective config has
+        not changed since the last refresh — avoids log spam and unnecessary
+        object reconstruction on every poll cycle.
+        """
         cfg = self._read_db() or self._boot_default()
+
+        # Skip rebuild if nothing changed (avoids log spam + object churn).
+        with self._lock:
+            if self._cfg == cfg and self._llm is not None:
+                log.debug("LLM config unchanged: provider=%s model=%s", cfg.provider, cfg.model)
+                return
+
         try:
             llm = self._build_llm(cfg)
         except Exception as e:
@@ -198,9 +210,15 @@ class LLMConfigStore:
             llm = self._build_llm(cfg)
 
         with self._lock:
+            old_cfg = self._cfg
             self._cfg = cfg
             self._llm = llm
-        log.info("LLM config loaded: provider=%s model=%s", cfg.provider, cfg.model)
+
+        # Only log at INFO on initial load or when the config actually changes.
+        if old_cfg is None or old_cfg != cfg:
+            log.info("LLM config loaded: provider=%s model=%s", cfg.provider, cfg.model)
+        else:
+            log.debug("LLM config unchanged: provider=%s model=%s", cfg.provider, cfg.model)
 
     def start_poller(self):
         """Start the background DB poller (called at app startup)."""
@@ -266,3 +284,24 @@ def set_llm_store(store: LLMConfigStore):
 def get_llm():
     """All workers call this — returns the single global LLM (no tier argument)."""
     return get_llm_store().get_llm()
+
+
+def get_llm_with_tools(llm, tool_defs: list[dict]):
+    """Bind tool definitions to an LLM for native function calling.
+
+    Returns llm.bind_tools(tool_defs) when the LLM supports it.
+    Falls back to the plain LLM (no tool binding) when:
+      - The LLM has no bind_tools method (e.g. FakeListChatModel for tests)
+      - bind_tools() raises (model doesn't support tool calling)
+
+    This allows the same graph code to work with both tool-capable models
+    (Ollama with tools capability) and fallback models (text-based parsing).
+    """
+    bind = getattr(llm, "bind_tools", None)
+    if bind is None:
+        return llm
+    try:
+        return bind(tool_defs)
+    except (TypeError, ValueError, NotImplementedError) as e:
+        log.debug("bind_tools failed (%s) — falling back to plain LLM", e)
+        return llm

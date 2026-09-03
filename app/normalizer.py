@@ -56,23 +56,19 @@ HEBREW_STATISTICS_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 FORM_GENERATION_RE = re.compile(
-    r"\b(generate|create|make).{0,30}(form|forms|combination|ticket|lucky)\b",
+    r"\b(generate(?!d)|create|make).{0,30}(form|forms|combination|ticket|lucky)\b",
     re.IGNORECASE,
 )
 HEBREW_FORM_GENERATION_RE = re.compile(
-    r"(צור|צרי|תיצור|תיצרי|יצירת|טופס|טפסים|מזל|צירוף)",
+    r"(?:צור|צרי|תיצור|תיצרי|תייצר|תייצרי|יצירת|הגרל(?!ת)|תגריל|תגרילי|יגריל).{0,30}(?:טופס|טפסים|מזל|צירוף|שילוב)",
     re.IGNORECASE,
 )
 ANALYZE_RE = re.compile(
-    r"\b(analyze|analyse|analysis|what stands out|check)(?:.{0,60}(?:numbers?|my|these|those|the following|\d{1,2}))?",
+    r"\b(analyz(?:e|ed|ing|es)|analyse|analysis|what stands out|check|historical coverage|best historical|which has the best)\b",
     re.IGNORECASE,
 )
 HEBREW_ANALYZE_RE = re.compile(
-    r"(נתח|ניתוח|מה בולט|בדוק)(?:.{0,60}(?:מספרים|המספרים|האלה|האלו|\d{1,2}))?",
-    re.IGNORECASE,
-)
-HEBREW_ANALYZE_RE = re.compile(
-    r"(נתח|ניתוח|מה בולט|בדוק|מספרים|המספרים|האלה|האלו)",
+    r"(נ.?תח|ניתוח|מה בולט|בדוק|האלה|האלו|כיסוי היסטורי|הכיסוי ההיסטורי|חוזקות|חולשות)",
     re.IGNORECASE,
 )
 
@@ -372,7 +368,9 @@ def _classify_request_kind(message: str, lang: str) -> tuple[str, Optional[str]]
         return "statistics", None
 
     # 7. Domain explanation (what is X)
-    if re.search(r"\b(what is|what are|explain|how does|what does|מה זה|מה זאת|מהי|מהם)\b", message, re.IGNORECASE):
+    # Note: מהם removed — it ambiguously matches "איזה מהם" (which of them),
+    # causing analyze-style prompts to be misclassified as domain_explanation.
+    if re.search(r"\b(what is|what are|explain|how does|what does|מה זה|מה זאת|מהי)\b", message, re.IGNORECASE):
         return "domain_explanation", None
 
     # 8. Ambiguous
@@ -637,9 +635,21 @@ def normalize(
     provenance: dict[str, str] = {"language": "message", "request_kind": "message"}
 
     # Extract common entities
-    numbers = _extract_numbers(message)
-    if numbers:
-        provenance["numbers"] = "message"
+    # Context numbers (from UI) are authoritative when present — message-extracted
+    # numbers may include counts (e.g. "generated 3 forms") that aren't lottery numbers.
+    context_numbers = context.get("numbers") if context else None
+    if isinstance(context_numbers, list) and context_numbers:
+        numbers = [int(n) for n in context_numbers if isinstance(n, (int, float)) and 1 <= int(n) <= 99]
+        if numbers:
+            provenance["numbers"] = "context"
+        else:
+            numbers = _extract_numbers(message)
+            if numbers:
+                provenance["numbers"] = "message"
+    else:
+        numbers = _extract_numbers(message)
+        if numbers:
+            provenance["numbers"] = "message"
 
     group_size = _extract_group_size(message, language)
     if group_size is not None:

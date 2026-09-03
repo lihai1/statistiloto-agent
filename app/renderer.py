@@ -128,14 +128,113 @@ def render_statistics_result(groups: list, how_many: int, group_size: int, stren
     return "\n".join(lines)
 
 
+def render_generate_form_result(forms: list, how_many: int, language: str = "en") -> str:
+    """Render a generate_form result as readable text without an LLM."""
+    if not forms:
+        if language == "he":
+            return "לא ניתן היה ליצור טפסים. נסה עם פרמטרים שונים."
+        return "No forms could be generated. Try with different parameters."
+
+    if language == "he":
+        lines = [f"הטפסים שנוצרו ({len(forms)}):"]
+        for i, form in enumerate(forms, 1):
+            nums = form.get("numbers", [])
+            nums_str = " + ".join(str(n) for n in nums)
+            strong = form.get("strong")
+            if strong is not None:
+                lines.append(f"{i}. {nums_str} | חזק: {strong}")
+            else:
+                lines.append(f"{i}. {nums_str}")
+        lines.append(get_disclaimer(language))
+    else:
+        lines = [f"Generated forms ({len(forms)}):"]
+        for i, form in enumerate(forms, 1):
+            nums = form.get("numbers", [])
+            nums_str = " + ".join(str(n) for n in nums)
+            strong = form.get("strong")
+            if strong is not None:
+                lines.append(f"{i}. {nums_str} | Strong: {strong}")
+            else:
+                lines.append(f"{i}. {nums_str}")
+        lines.append(get_disclaimer(language))
+
+    return "\n".join(lines)
+
+
+def render_analyze_result(frequency_groups: list, archive_size: int, language: str = "en") -> str:
+    """Render an analyze result as readable text without an LLM.
+
+    Shows the top entries per group size (singles, pairs, triples, etc.)
+    found in the user's selected numbers against historical draws.
+    """
+    if not frequency_groups:
+        if language == "he":
+            return "לא נמצאו תדירויות עבור המספרים שנבחרו."
+        return "No frequency data found for the selected numbers."
+
+    size_words = {
+        1: "singles" if language == "en" else "מספרים בודדים",
+        2: "pairs" if language == "en" else "זוגות",
+        3: "triples" if language == "en" else "שלשות",
+        4: "quads" if language == "en" else "רביעיות",
+        5: "quints" if language == "en" else "חמישיות",
+        6: "six-number groups" if language == "en" else "שישיות",
+    }
+
+    if language == "he":
+        lines = [f"ניתוח המספרים שלך (מתוך {archive_size} הגרלות):"]
+        for group in frequency_groups:
+            size = group.get("size", 0)
+            entries = group.get("entries", [])
+            if not entries:
+                continue
+            size_word = size_words.get(size, f"גודל {size}")
+            lines.append(f"\n{size_word}:")
+            for entry in entries:
+                nums = entry.get("numbers", [])
+                count = entry.get("count", 0)
+                nums_str = " + ".join(str(n) for n in nums)
+                lines.append(f"  {nums_str} — הופיע {count} פעמים")
+        lines.append(get_disclaimer(language))
+    else:
+        lines = [f"Analysis of your numbers (from {archive_size} draws):"]
+        for group in frequency_groups:
+            size = group.get("size", 0)
+            entries = group.get("entries", [])
+            if not entries:
+                continue
+            size_word = size_words.get(size, f"size {size}")
+            lines.append(f"\n{size_word}:")
+            for entry in entries:
+                nums = entry.get("numbers", [])
+                count = entry.get("count", 0)
+                nums_str = " + ".join(str(n) for n in nums)
+                lines.append(f"  {nums_str} — {count} appearances")
+        lines.append(get_disclaimer(language))
+
+    return "\n".join(lines)
+
+
 def render_structured_result(tool: str, result: dict, language: str = "en") -> str:
-    """Render a tool result for simple cases."""
+    """Render a tool result for simple cases (zero LLM calls)."""
     if tool == "get_statistics":
         return render_statistics_result(
             result.get("groups", []),
             result.get("how_many", 10),
             result.get("group_size", 2),
             result.get("strength", "hot"),
+            language,
+        )
+    if tool == "generate_form":
+        return render_generate_form_result(
+            result.get("forms", []),
+            result.get("how_many", 1),
+            language,
+        )
+    if tool == "analyze":
+        return render_analyze_result(
+            result.get("frequency_groups", []),
+            result.get("archive_size", 0),
             language,
         )
     if "error" in result:

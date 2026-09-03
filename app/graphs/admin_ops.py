@@ -77,6 +77,10 @@ def plan_action(state: AdminOpsState) -> dict:
     hist_len = len(state.get("history", []))
     log.info("[admin_ops.plan] START user=%s session=%s history_len=%d", user_sub, session_id, hist_len)
     try:
+        from app.llm.config_store import get_llm_with_tools
+        from app.tools.registry import get_tool_definitions
+        from app.graphs.tool_parser import parse_tool_call_native
+
         llm = get_llm()
         cfg = get_tier_config(state["tier"])
         tools_str = ", ".join(cfg.allowed_tools)
@@ -105,10 +109,18 @@ def plan_action(state: AdminOpsState) -> dict:
             "  'users'/'sessions' → query_db {\"sql\": \"SELECT ...\", \"limit\": 50}\n"
             "  No match → TOOL: none"
         )
-        resp = llm.invoke(prompt)
+
+        # Try native function calling first (bind_tools), fall back to text parsing.
+        all_defs = get_tool_definitions()
+        authorized_defs = [d for d in all_defs if d["name"] in cfg.allowed_tools]
+        llm_with_tools = get_llm_with_tools(llm, authorized_defs)
+        resp = llm_with_tools.invoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
 
-        planned_tool, tool_args = parse_tool_call(content)
+        # Try native parsing first (from AIMessage.tool_calls), fall back to text.
+        planned_tool, tool_args = parse_tool_call_native(resp)
+        if planned_tool is None:
+            planned_tool, tool_args = parse_tool_call(content)
 
         # Small-model guard: for well-known admin phrases, force the right tool
         # even if the LLM picked a different one (or none).
@@ -199,6 +211,9 @@ def execute(state: AdminOpsState) -> dict:
             result = {"status": "no_action", "message": "No admin action needed."}
         elif planned_tool == "trigger_scraper":
             result = admin_ops.trigger_scraper(claims)
+            # New draw data arrived — invalidate cached statistics/analysis.
+            from app.tools.lottery_grpc import invalidate_tool_cache
+            invalidate_tool_cache()
         elif planned_tool == "query_audit_log":
             result = admin_ops.query_audit_log(claims, limit=tool_args.get("limit", 50))
         elif planned_tool == "read_token_usage":

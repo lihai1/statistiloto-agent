@@ -321,6 +321,154 @@ def _record_session(claims, req, prior_history) -> None:
         log.warning("[chat] Failed to record session metadata: %s", e)
 
 
+# ── SSE streaming chat ────────────────────────────────────────
+
+# Human-readable labels for graph node names (for progress events).
+_NODE_LABELS = {
+    "supervisor": "Routing request",
+    "retrieve_context": "Retrieving context",
+    "draft_analysis": "Planning analysis",
+    "execute_tool": "Executing tool",
+    "finalize": "Finalizing response",
+    "plan_action": "Planning admin action",
+    "nl_general": "Generating response",
+}
+
+
+def _sse_event(event: str, data: dict) -> str:
+    """Format a single SSE event."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _build_stream_state(claims, req, history, prev_conv_state) -> dict:
+    """Build the graph input state shared by /chat and /chat/stream."""
+    return {
+        "user_sub": claims.sub,
+        "tier": claims.tier,
+        "session_id": req.session_id,
+        "message": req.message,
+        "intent": req.intent,
+        "jwt_token": claims.raw_token,
+        "history": history,
+        "context": req.context,
+        "lang": (req.lang or "").strip().lower() or None,
+        "client_intent_hint": req.intent,
+        "prev_conversation_state": prev_conv_state,
+    }
+
+
+def _setup_chat_request(claims, req):
+    """Common setup for /chat and /chat/stream: graph, thread_id, config, history."""
+    graph = get_graph()
+    thread_id = f"{claims.sub}:{req.session_id}"
+    from app.config.settings import get_tier_config
+    tier_cfg = get_tier_config(claims.tier)
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": tier_cfg.recursion_limit,
+    }
+    try:
+        prev_state = graph.get_state(config)
+        history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
+        prev_conv_state = prev_state.values.get("conversation_state") if prev_state and prev_state.values else None
+    except Exception:
+        history = []
+        prev_conv_state = None
+    return graph, thread_id, config, history, prev_conv_state
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
+    """Stream agent events as SSE (node-level progress + final response).
+
+    Same JWT validation, LLM override, history, and recursion-limit behavior
+    as POST /chat. Emits:
+      - event: progress  {node, label}   — after each graph node completes
+      - event: done      {response, thread_id}  — final response
+      - event: paused    {thread_id}     — HITL interrupt (write tool)
+      - event: error     {message}       — on failure
+
+    The existing POST /chat remains unchanged as a compatibility/fallback endpoint.
+    """
+    try:
+        claims = validate_jwt(authorization)
+    except JWTError as e:
+        log.error("[chat.stream] JWT validation failed: %s", e)
+        raise HTTPException(status_code=401, detail=str(e))
+
+    log.info("[chat.stream] START user=%s tier=%s session=%s", claims.sub, claims.tier, req.session_id)
+
+    # Admin-only LLM override (same as /chat).
+    override_token = None
+    if req.config_id is not None:
+        if claims.tier != "admin":
+            log.warning("[chat.stream] Non-admin user=%s attempted config_id override — ignored", claims.sub)
+        else:
+            cfg = _read_llm_config_by_id(req.config_id)
+            if cfg is None:
+                raise HTTPException(status_code=404, detail=f"LLM config {req.config_id} not found")
+            try:
+                override_llm = build_llm(cfg)
+                override_token = set_llm_override(override_llm)
+            except Exception as e:
+                log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
+
+    async def _stream_generator():
+        """Yield SSE events from graph.stream()."""
+        import asyncio
+        try:
+            graph, thread_id, config, history, prev_conv_state = _setup_chat_request(claims, req)
+            state = _build_stream_state(claims, req, history, prev_conv_state)
+
+            def _run_stream():
+                """Run graph.stream() in a thread (sync checkpointer)."""
+                chunks = []
+                for chunk in graph.stream(state, config, stream_mode="updates"):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = await asyncio.to_thread(_run_stream)
+
+            # Emit progress events for each node update.
+            for chunk in chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                for node_name in chunk:
+                    label = _NODE_LABELS.get(node_name, node_name.replace("_", " ").title())
+                    yield _sse_event("progress", {"node": node_name, "label": label})
+
+            # Check final state for HITL interrupt or response.
+            final_state = graph.get_state(config)
+            if final_state and final_state.next:
+                # Graph paused — HITL interrupt.
+                log.info("[chat.stream] PAUSED user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
+                _record_session(claims, req, history)
+                yield _sse_event("paused", {"thread_id": thread_id})
+            else:
+                values = final_state.values if final_state else {}
+                response = values.get("response") if isinstance(values, dict) else None
+                log.info("[chat.stream] DONE user=%s session=%s response_len=%d",
+                         claims.sub, req.session_id, len(response) if response else 0)
+                _record_session(claims, req, history)
+                yield _sse_event("done", {"response": response, "thread_id": thread_id})
+
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            log.error("[chat.stream] ERROR user=%s session=%s type=%s msg=%s",
+                      claims.sub, req.session_id, error_type, error_msg, exc_info=True)
+            yield _sse_event("error", {"message": f"{error_type}: {error_msg}"})
+        finally:
+            if override_token is not None:
+                reset_llm_override(override_token)
+
+    return StreamingResponse(
+        _stream_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/approve")
 async def approve(req: ApproveRequest, authorization: str = Header(...)):
     """Resume a paused HITL thread with a human decision."""

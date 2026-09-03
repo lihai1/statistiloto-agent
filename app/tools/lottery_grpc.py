@@ -15,8 +15,13 @@ The strong number is always separate from the six-number group.
 
 from __future__ import annotations
 
+import functools
+import json
 import logging
-from typing import Optional
+import threading
+import time
+from collections import OrderedDict
+from typing import Any, Callable, Optional
 
 from app.config.settings import get_settings
 
@@ -33,6 +38,101 @@ _STRENGTH_MAP = {
     2: 2,
     1: 1,
 }
+
+
+# ── TTL result cache ──────────────────────────────────────────
+
+class _ToolCache:
+    """Thread-safe LRU cache with TTL for deterministic tool results.
+
+    Cache key = (tool_name, canonical_args_json). Entries expire after ttl_seconds.
+    When max_size is exceeded, the oldest entry is evicted (insertion-order LRU).
+
+    TTL and max_size are read dynamically from the provided callables so that
+    tests can monkeypatch them without recreating the cache singleton.
+    """
+
+    def __init__(self, ttl_fn: Callable[[], float], max_size_fn: Callable[[], int]):
+        self._ttl_fn = ttl_fn
+        self._max_size_fn = max_size_fn
+        self._entries: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _make_key(tool: str, kwargs: dict) -> str:
+        return f"{tool}:{json.dumps(kwargs, sort_keys=True, default=str)}"
+
+    def get(self, tool: str, kwargs: dict) -> Any | None:
+        key = self._make_key(tool, kwargs)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            ts, value = entry
+            if time.monotonic() - ts > self._ttl_fn():
+                del self._entries[key]
+                return None
+            # Move to end (most recently used).
+            self._entries.move_to_end(key)
+            return value
+
+    def put(self, tool: str, kwargs: dict, value: Any) -> None:
+        key = self._make_key(tool, kwargs)
+        with self._lock:
+            self._entries[key] = (time.monotonic(), value)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_size_fn():
+                self._entries.popitem(last=False)
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_tool_cache: _ToolCache | None = None
+
+
+def _get_cache() -> _ToolCache:
+    """Lazily create the singleton tool cache from settings."""
+    global _tool_cache
+    if _tool_cache is None:
+        # Use lambdas so monkeypatching _get_cache_ttl/_get_cache_max_size
+        # in tests takes effect without recreating the cache singleton.
+        _tool_cache = _ToolCache(
+            ttl_fn=lambda: _get_cache_ttl(),
+            max_size_fn=lambda: _get_cache_max_size(),
+        )
+    return _tool_cache
+
+
+def _get_cache_ttl() -> float:
+    return get_settings().tools.cache_ttl_seconds
+
+
+def _get_cache_max_size() -> int:
+    return get_settings().tools.cache_max_size
+
+
+def invalidate_tool_cache() -> None:
+    """Clear all cached tool results. Called after scraper runs (new data)."""
+    if _tool_cache is not None:
+        _tool_cache.invalidate()
+
+
+def _cached(tool_name: str, kwargs: dict, fetch: Callable[[], dict]) -> dict:
+    """Cache wrapper: check cache, call fetch on miss, store result.
+
+    Errors (results containing an 'error' key) are NOT cached — they may be
+    transient (service unavailable) and should be retried on the next call.
+    """
+    cache = _get_cache()
+    cached_result = cache.get(tool_name, kwargs)
+    if cached_result is not None:
+        return cached_result
+    result = fetch()
+    if isinstance(result, dict) and "error" not in result:
+        cache.put(tool_name, kwargs, result)
+    return result
 
 
 def _get_stub():
@@ -95,35 +195,43 @@ def generate_form(how_many: int, form_type: int, will_be: list[int] | None = Non
         strength: 2=STRONG (frequent/hot), 1=WEAK (less frequent/cold).
         window_from / window_to: optional ISO date bounds for the historical window.
     """
-    if _mock_client is not None:
-        fn = _mock_client.get("generate_form")
-        if fn:
-            return fn(how_many=how_many, form_type=form_type, will_be=will_be,
-                      strength=strength, window_from=window_from, window_to=window_to)
-        return {"forms": [], "error": "Mock generate_form not configured"}
+    cache_kwargs = {
+        "how_many": how_many, "form_type": form_type, "will_be": will_be,
+        "strength": strength, "window_from": window_from, "window_to": window_to,
+    }
 
-    stub = _get_stub()
-    if stub is None:
-        return {"forms": [], "error": "Lottery service unavailable"}
+    def _fetch() -> dict:
+        if _mock_client is not None:
+            fn = _mock_client.get("generate_form")
+            if fn:
+                return fn(how_many=how_many, form_type=form_type, will_be=will_be,
+                          strength=strength, window_from=window_from, window_to=window_to)
+            return {"forms": [], "error": "Mock generate_form not configured"}
 
-    from app.gen import lottery_pb2
-    window = _build_window(window_from, window_to)
-    req = lottery_pb2.GenerateFormRequest(
-        how_many=how_many,
-        form_type=form_type,
-        will_be=will_be or [],
-        strength=strength,
-    )
-    if window is not None:
-        req.window.CopyFrom(window)
-    resp = stub.GenerateForm(req)
-    forms = []
-    for s in resp.forms:
-        entry = {"numbers": list(s.numbers)}
-        if s.HasField("strong"):
-            entry["strong"] = s.strong
-        forms.append(entry)
-    return {"forms": forms}
+        stub = _get_stub()
+        if stub is None:
+            return {"forms": [], "error": "Lottery service unavailable"}
+
+        from app.gen import lottery_pb2
+        window = _build_window(window_from, window_to)
+        req = lottery_pb2.GenerateFormRequest(
+            how_many=how_many,
+            form_type=form_type,
+            will_be=will_be or [],
+            strength=strength,
+        )
+        if window is not None:
+            req.window.CopyFrom(window)
+        resp = stub.GenerateForm(req)
+        forms = []
+        for s in resp.forms:
+            entry = {"numbers": list(s.numbers)}
+            if s.HasField("strong"):
+                entry["strong"] = s.strong
+            forms.append(entry)
+        return {"forms": forms}
+
+    return _cached("generate_form", cache_kwargs, _fetch)
 
 
 def get_statistics(how_many: int = 10, group_size: int = 2, strength: str | int = "hot",
@@ -150,28 +258,36 @@ def get_statistics(how_many: int = 10, group_size: int = 2, strength: str | int 
     # Map strength to proto enum value.
     strength_val = _STRENGTH_MAP.get(strength, 2) if not isinstance(strength, int) else strength
 
-    if _mock_client is not None:
-        fn = _mock_client.get("get_statistics")
-        if fn:
-            return fn(how_many=how_many, group_size=group_size, strength=strength_val,
-                      window_from=window_from, window_to=window_to)
-        return {"groups": [], "error": "Mock get_statistics not configured"}
+    cache_kwargs = {
+        "how_many": how_many, "group_size": group_size, "strength": strength_val,
+        "window_from": window_from, "window_to": window_to,
+    }
 
-    stub = _get_stub()
-    if stub is None:
-        return {"groups": [], "error": "Lottery service unavailable"}
+    def _fetch() -> dict:
+        if _mock_client is not None:
+            fn = _mock_client.get("get_statistics")
+            if fn:
+                return fn(how_many=how_many, group_size=group_size, strength=strength_val,
+                          window_from=window_from, window_to=window_to)
+            return {"groups": [], "error": "Mock get_statistics not configured"}
 
-    from app.gen import lottery_pb2
-    window = _build_window(window_from, window_to)
-    req = lottery_pb2.GetStatisticsRequest(
-        how_many=how_many,
-        form_type=group_size,
-        strength=strength_val,
-    )
-    if window is not None:
-        req.window.CopyFrom(window)
-    resp = stub.GetStatistics(req)
-    return {"groups": [{"numbers": list(p.numbers), "count": p.count} for p in resp.pairs]}
+        stub = _get_stub()
+        if stub is None:
+            return {"groups": [], "error": "Lottery service unavailable"}
+
+        from app.gen import lottery_pb2
+        window = _build_window(window_from, window_to)
+        req = lottery_pb2.GetStatisticsRequest(
+            how_many=how_many,
+            form_type=group_size,
+            strength=strength_val,
+        )
+        if window is not None:
+            req.window.CopyFrom(window)
+        resp = stub.GetStatistics(req)
+        return {"groups": [{"numbers": list(p.numbers), "count": p.count} for p in resp.pairs]}
+
+    return _cached("get_statistics", cache_kwargs, _fetch)
 
 
 def analyze(form: list[int], window_from: str | None = None,
@@ -197,36 +313,41 @@ def analyze(form: list[int], window_from: str | None = None,
             "archive_size": N
         }
     """
-    if _mock_client is not None:
-        fn = _mock_client.get("analyze")
-        if fn:
-            return fn(form=form, window_from=window_from, window_to=window_to)
-        return {"frequency_groups": [], "archive_size": 0, "error": "Mock analyze not configured"}
+    cache_kwargs = {"form": form, "window_from": window_from, "window_to": window_to}
 
-    stub = _get_stub()
-    if stub is None:
-        return {"frequency_groups": [], "archive_size": 0, "error": "Lottery service unavailable"}
+    def _fetch() -> dict:
+        if _mock_client is not None:
+            fn = _mock_client.get("analyze")
+            if fn:
+                return fn(form=form, window_from=window_from, window_to=window_to)
+            return {"frequency_groups": [], "archive_size": 0, "error": "Mock analyze not configured"}
 
-    from app.gen import lottery_pb2
-    window = _build_window(window_from, window_to)
-    req = lottery_pb2.AnalyzeRequest(form=form)
-    if window is not None:
-        req.window.CopyFrom(window)
-    resp = stub.Analyze(req)
-    return {
-        "frequency_groups": [
-            {
-                "size": g.size,
-                "combos": g.combos,
-                "entries": [
-                    {"numbers": list(e.numbers), "count": e.count}
-                    for e in g.entries
-                ],
-            }
-            for g in resp.frequency_groups
-        ],
-        "archive_size": resp.archive_size,
-    }
+        stub = _get_stub()
+        if stub is None:
+            return {"frequency_groups": [], "archive_size": 0, "error": "Lottery service unavailable"}
+
+        from app.gen import lottery_pb2
+        window = _build_window(window_from, window_to)
+        req = lottery_pb2.AnalyzeRequest(form=form)
+        if window is not None:
+            req.window.CopyFrom(window)
+        resp = stub.Analyze(req)
+        return {
+            "frequency_groups": [
+                {
+                    "size": g.size,
+                    "combos": g.combos,
+                    "entries": [
+                        {"numbers": list(e.numbers), "count": e.count}
+                        for e in g.entries
+                    ],
+                }
+                for g in resp.frequency_groups
+            ],
+            "archive_size": resp.archive_size,
+        }
+
+    return _cached("analyze", cache_kwargs, _fetch)
 
 
 # ── Mock support for testing ─────────────────────────────────

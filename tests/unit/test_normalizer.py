@@ -291,3 +291,94 @@ class TestClientLangHintNotAuthoritative:
     def test_hebrew_detected_despite_en_hint(self):
         req = normalize("מה הזוגות החמים?", lang_hint="en")
         assert req.language == "he"
+
+
+class TestHebrewUIPromptClassification:
+    """Tests for Hebrew contextual UI prompts sent by feature pages.
+
+    These prompts are pre-filled messages from the Angular UI's "Ask AI"
+    buttons. They must classify to the correct request_kind so the agent
+    routes them to the right tool, not to a clarification question.
+
+    Bug: HEBREW_FORM_GENERATION_RE matched bare טפס/טפסים without an action
+    verb, causing past-tense descriptions like "הרגע הגרלתי 3 טפסי..." to be
+    misclassified as form_generation (which then asks "כמה טפסים תרצה ליצור?").
+    Bug: HEBREW_ANALYZE_RE lacked keywords for "historical coverage" / "best",
+    so analyze-style prompts fell through to ambiguous/other kinds.
+    Bug: HEBREW_ANALYZE_RE contained the generic word מספרים (numbers), which
+    caused statistics prompts containing מספרים to be misclassified as
+    number_analysis (analyze is checked before statistics in classification order).
+    """
+
+    def test_build_form_prompt_classifies_as_analysis(self):
+        """buildForm flow prompt: 'I just generated 3 forms with the coach.
+        The one I like is 1, 8, 11... Which has the best historical coverage?'"""
+        msg = "הרגע הגרלתי 3 טפסי לוטו עם המאמן. הטופס שאהבתי הוא 1, 8, 11, 21, 25, 26. איזה מהם בעל הכיסוי ההיסטורי הטוב ביותר?"
+        req = normalize(msg, context={"page": "generate", "numbers": [1, 8, 11, 21, 25, 26]})
+        assert req.request_kind == "number_analysis"
+        assert req.operation == "analyze_numbers"
+        assert req.numbers == [1, 8, 11, 21, 25, 26]
+
+    def test_generate_prompt_classifies_as_analysis(self):
+        """generate-tab prompt: 'I just generated 3 lottery forms. Which has
+        the best historical coverage?'"""
+        msg = "הרגע הגרלתי 3 טפסי לוטו. איזה מהם בעל הכיסוי ההיסטורי הטוב ביותר?"
+        req = normalize(msg, context={"page": "generate"})
+        assert req.request_kind == "number_analysis"
+        assert req.operation == "analyze_numbers"
+
+    def test_analyze_prompt_classifies_as_analysis(self):
+        """analyze-tab prompt: 'I analyzed the numbers 1, 8, 11... against
+        historical draws. Summarize frequency results...'"""
+        msg = "ניתחתי את המספרים 1, 8, 11, 21, 25, 26 מול הגרלות היסטוריות. סכם את תוצאות התדירות והצע אילו צירופי מספרים מופיעים לעיתים הקרובות ביותר."
+        req = normalize(msg, context={"page": "analyze", "numbers": [1, 8, 11, 21, 25, 26]})
+        assert req.request_kind == "number_analysis"
+        assert req.operation == "analyze_numbers"
+        assert req.numbers == [1, 8, 11, 21, 25, 26]
+
+    def test_statistics_prompt_classifies_as_statistics(self):
+        """statistics-tab prompt: 'I found 5 frequent number groups in the
+        statistics. Which has the highest historical frequency?'"""
+        msg = "מצאתי 5 קבוצות מספרים תכופות בסטטיסטיקה. איזו מהן בעל התדירות ההיסטורית הגבוהה ביותר?"
+        req = normalize(msg, context={"page": "statistics", "groupSize": 2})
+        assert req.request_kind == "statistics"
+        assert req.operation == "group_frequency"
+
+    def test_analyze_flow_prompt_classifies_as_analysis(self):
+        """analyze-flow prompt: 'I analyzed the numbers 1, 8, 11 with the
+        coach. Summarize strengths and weaknesses of this set.'"""
+        msg = "ניתחתי את המספרים 1, 8, 11 עם המאמן. סכם את החוזקות והחולשות של הסט הזה."
+        req = normalize(msg, context={"page": "analyze", "numbers": [1, 8, 11]})
+        assert req.request_kind == "number_analysis"
+        assert req.operation == "analyze_numbers"
+        assert req.numbers == [1, 8, 11]
+
+    def test_past_tense_generated_not_form_generation(self):
+        """'I generated 3 forms' (past tense) must NOT classify as form_generation.
+        Only imperative/future 'create/generate forms' should."""
+        req = normalize("הרגע הגרלתי 3 טפסים")
+        assert req.request_kind != "form_generation"
+
+    def test_imperative_generate_still_form_generation(self):
+        """'Generate 3 forms for me' (imperative) must still classify as form_generation."""
+        req = normalize("הגרל לי 5 טפסים")
+        assert req.request_kind == "form_generation"
+        assert req.operation == "generate_form"
+
+    def test_existing_generate_form_he_still_works(self):
+        """Existing test: 'צור 3 טפסים' must still classify as form_generation."""
+        req = normalize("צור 3 טפסים")
+        assert req.request_kind == "form_generation"
+        assert req.operation == "generate_form"
+
+    def test_existing_analyze_he_still_works(self):
+        """Existing test: 'נתח את המספרים 7, 11, 17...' must still classify as number_analysis."""
+        req = normalize("נתח את המספרים 7, 11, 17, 24, 31, 36")
+        assert req.request_kind == "number_analysis"
+        assert req.operation == "analyze_numbers"
+
+    def test_existing_statistics_he_still_works(self):
+        """Existing test: 'מה המספרים החמים?' must still classify as statistics."""
+        req = normalize("מה המספרים החמים?")
+        assert req.request_kind == "statistics"
+        assert req.operation == "group_frequency"
