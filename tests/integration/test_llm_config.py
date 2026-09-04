@@ -76,3 +76,65 @@ class TestLLMConfigStore:
         content = result.content if hasattr(result, "content") else str(result)
         assert "Hello from mock LLM" in content
         store.stop_poller()
+
+    def test_num_predict_propagates_from_db(self, db_pool):
+        """num_predict column is read from DB and applied to the config."""
+        from app.llm.config_store import LLMConfigStore
+
+        # Insert a config row with num_predict.
+        with db_pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO agent.llm_config (provider, model, base_url, api_key, "
+                "updated_by, updated_at, num_predict, is_active) "
+                "VALUES ('ollama', 'dicta-instruct-1.7b', 'http://ollama:11434', '', "
+                "'admin', %s, 512, true)",
+                (time.time(),),
+            )
+
+        store = LLMConfigStore(poll_seconds=999, pg_pool=db_pool,
+                               mock_responses=["test"])
+        cfg = store.get_config()
+        assert cfg.provider == "ollama"
+        assert cfg.model == "dicta-instruct-1.7b"
+        assert cfg.num_predict == 512
+        store.stop_poller()
+
+    def test_num_predict_null_in_db_uses_model_default(self, db_pool):
+        """When num_predict is NULL in DB, config store returns None (model default).
+
+        The safe default of 256 only applies in the boot default path (when no
+        DB row exists). When a DB row exists with NULL num_predict, the config
+        store passes None through, meaning Ollama uses its model default.
+        """
+        from app.llm.config_store import LLMConfigStore
+
+        # Insert a config row WITHOUT num_predict (NULL).
+        with db_pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO agent.llm_config (provider, model, base_url, api_key, "
+                "updated_by, updated_at, is_active) "
+                "VALUES ('ollama', 'dicta-instruct-1.7b', 'http://ollama:11434', '', "
+                "'admin', %s, true)",
+                (time.time(),),
+            )
+
+        store = LLMConfigStore(poll_seconds=999, pg_pool=db_pool,
+                               mock_responses=["test"])
+        cfg = store.get_config()
+        assert cfg.provider == "ollama"
+        assert cfg.model == "dicta-instruct-1.7b"
+        # NULL in DB → None in config (model default, no cap)
+        assert cfg.num_predict is None
+        store.stop_poller()
+
+    def test_boot_default_has_safe_num_predict(self, db_pool):
+        """When no DB row exists, boot default applies safe num_predict=256."""
+        from app.llm.config_store import LLMConfigStore
+
+        # No DB row inserted — should fall back to boot default.
+        store = LLMConfigStore(poll_seconds=999, pg_pool=db_pool,
+                               mock_responses=["test"])
+        cfg = store.get_config()
+        # Boot default (mock) should have safe num_predict=256.
+        assert cfg.num_predict == 256
+        store.stop_poller()

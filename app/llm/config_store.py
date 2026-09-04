@@ -32,6 +32,7 @@ class LLMConfig:
     base_url: str = ""
     api_key: str = ""
     request_timeout_seconds: int = 300
+    num_predict: int | None = None  # max tokens to generate (None = model default)
 
 
 def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
@@ -49,11 +50,14 @@ def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
 
     if cfg.provider == "ollama":
         from langchain_ollama import ChatOllama
-        return ChatOllama(
-            model=cfg.model,
-            base_url=cfg.base_url or "http://ollama:11434",
-            timeout=timeout,
-        )
+        kwargs: dict = {
+            "model": cfg.model,
+            "base_url": cfg.base_url or "http://ollama:11434",
+            "timeout": timeout,
+        }
+        if cfg.num_predict is not None:
+            kwargs["num_predict"] = cfg.num_predict
+        return ChatOllama(**kwargs)
 
     if cfg.provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -117,8 +121,10 @@ class LLMConfigStore:
         """Fallback from env/YAML when no DB row exists."""
         s = get_settings()
         timeout = s.llm.request_timeout_seconds
+        # Safe default: cap output tokens to prevent CPU exhaustion on slow models.
+        default_num_predict = 256
         if s.llm.mock:
-            return LLMConfig(provider="mock", model="fake-list", request_timeout_seconds=timeout)
+            return LLMConfig(provider="mock", model="fake-list", request_timeout_seconds=timeout, num_predict=default_num_predict)
         provider = s.llm.provider
         if provider == "ollama":
             return LLMConfig(
@@ -126,12 +132,14 @@ class LLMConfigStore:
                 model=s.llm.ollama.model,
                 base_url=s.llm.ollama.base_url,
                 request_timeout_seconds=timeout,
+                num_predict=default_num_predict,
             )
         return LLMConfig(
             provider="gemini",
             model=s.llm.gemini.model,
             api_key=s.llm.gemini.api_key,
             request_timeout_seconds=timeout,
+            num_predict=default_num_predict,
         )
 
     def _read_db(self) -> Optional[LLMConfig]:
@@ -145,16 +153,16 @@ class LLMConfigStore:
             if pool is None:
                 return None
             with pool.connection() as conn:
-                # Try the new schema: is_active column + request_timeout_seconds.
+                # Try the new schema: is_active column + request_timeout_seconds + num_predict.
                 try:
                     row = conn.execute(
-                        "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                        "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
                         "FROM agent.llm_config WHERE is_active = TRUE LIMIT 1"
                     ).fetchone()
                     if not row:
                         # No active row — fall back to latest by updated_at.
                         row = conn.execute(
-                            "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                            "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
                             "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
                         ).fetchone()
                     if row:
@@ -164,11 +172,12 @@ class LLMConfigStore:
                             base_url=row[2] or "",
                             api_key=row[3] or "",
                             request_timeout_seconds=row[4] or 300,
+                            num_predict=row[5],
                         )
                 except Exception:
                     # Column doesn't exist yet (pre-migration) — fall back
                     row = conn.execute(
-                        "SELECT provider, model, base_url, api_key "
+                        "SELECT provider, model, base_url, api_key, request_timeout_seconds "
                         "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
                     ).fetchone()
                     if row:
@@ -177,6 +186,7 @@ class LLMConfigStore:
                             model=row[1],
                             base_url=row[2] or "",
                             api_key=row[3] or "",
+                            request_timeout_seconds=row[4] or 300,
                         )
         except Exception as e:
             log.debug("Failed to read llm_config from DB: %s", e)

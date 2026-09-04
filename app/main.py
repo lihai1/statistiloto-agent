@@ -61,6 +61,7 @@ class LLMConfigRequest(BaseModel):
     base_url: str | None = Field(default=None, alias="baseUrl")
     api_key: str | None = Field(default=None, alias="apiKey")
     request_timeout_seconds: int | None = Field(default=None, alias="requestTimeoutSeconds")
+    num_predict: int | None = Field(default=None, alias="numPredict")  # max tokens to generate
 
 
 class FreeLlmToggleRequest(BaseModel):
@@ -174,7 +175,7 @@ def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
         pool = get_pool()
         with pool.connection() as conn:
             row = conn.execute(
-                "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
                 "FROM agent.llm_config WHERE id = %s",
                 (config_id,),
             ).fetchone()
@@ -185,6 +186,7 @@ def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
                     base_url=row[2] or "",
                     api_key=row[3] or "",
                     request_timeout_seconds=row[4] or 300,
+                    num_predict=row[5],
                 )
     except Exception as e:
         log.warning("[chat] Failed to read config_id=%s: %s", config_id, e)
@@ -399,23 +401,29 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
     log.info("[chat.stream] START user=%s tier=%s session=%s", claims.sub, claims.tier, req.session_id)
 
     # Admin-only LLM override (same as /chat).
-    override_token = None
+    # The override token is set and reset inside _stream_generator() so both
+    # operations happen in the same async context (ContextVar tokens are
+    # context-scoped and cannot be reset from a different context).
+    override_cfg = None
     if req.config_id is not None:
         if claims.tier != "admin":
             log.warning("[chat.stream] Non-admin user=%s attempted config_id override — ignored", claims.sub)
         else:
-            cfg = _read_llm_config_by_id(req.config_id)
-            if cfg is None:
+            override_cfg = _read_llm_config_by_id(req.config_id)
+            if override_cfg is None:
                 raise HTTPException(status_code=404, detail=f"LLM config {req.config_id} not found")
-            try:
-                override_llm = build_llm(cfg)
-                override_token = set_llm_override(override_llm)
-            except Exception as e:
-                log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
 
     async def _stream_generator():
         """Yield SSE events from graph.stream()."""
         import asyncio
+        # Set the LLM override in this context so reset_llm_override works.
+        override_token = None
+        if override_cfg is not None:
+            try:
+                override_llm = build_llm(override_cfg)
+                override_token = set_llm_override(override_llm)
+            except Exception as e:
+                log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
         try:
             graph, thread_id, config, history, prev_conv_state = _setup_chat_request(claims, req)
             state = _build_stream_state(claims, req, history, prev_conv_state)
@@ -528,6 +536,7 @@ async def get_llm_config(authorization: str = Header(...)):
         "base_url": cfg.base_url,
         "api_key": cfg.api_key,
         "request_timeout_seconds": cfg.request_timeout_seconds,
+        "num_predict": cfg.num_predict,
     }
 
 
@@ -547,6 +556,7 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
     from app.rag.store import get_pool
     import time
     timeout = req.request_timeout_seconds or 300
+    num_predict = req.num_predict if req.num_predict is not None and req.num_predict > 0 else 256
     name = req.name or f"{req.provider}/{req.model}"
     pool = get_pool()
     with pool.connection() as conn:
@@ -554,10 +564,10 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
         conn.execute("UPDATE agent.llm_config SET is_active = FALSE WHERE is_active = TRUE")
         conn.execute(
             """INSERT INTO agent.llm_config
-                   (name, provider, model, base_url, api_key, request_timeout_seconds, is_active, updated_by, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s, %s)
+                   (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, is_active, updated_by, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
                RETURNING id""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, claims.sub, time.time()),
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, claims.sub, time.time()),
         )
 
     # Force immediate refresh instead of waiting for the poller.
@@ -569,6 +579,7 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
         "model": req.model,
         "name": name,
         "request_timeout_seconds": timeout,
+        "num_predict": num_predict,
         "note": "Hot-reloaded — no restart needed",
     }
 
@@ -586,7 +597,7 @@ async def list_llm_configs(authorization: str = Header(...)):
     pool = get_pool()
     with pool.connection() as conn:
         rows = conn.execute(
-            """SELECT id, name, provider, model, base_url, api_key, request_timeout_seconds, is_active, updated_at
+            """SELECT id, name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, is_active, updated_at
                FROM agent.llm_config
                ORDER BY is_active DESC, updated_at DESC"""
         ).fetchall()
@@ -601,8 +612,9 @@ async def list_llm_configs(authorization: str = Header(...)):
             "base_url": r[4] or "",
             "api_key": r[5] or "",
             "request_timeout_seconds": r[6],
-            "is_active": r[7],
-            "updated_at": r[8],
+            "num_predict": r[7],
+            "is_active": r[8],
+            "updated_at": r[9],
         })
     return {"configs": configs}
 
@@ -622,15 +634,16 @@ async def create_llm_config(req: LLMConfigRequest, authorization: str = Header(.
     from app.rag.store import get_pool
     import time
     timeout = req.request_timeout_seconds or 300
+    num_predict = req.num_predict if req.num_predict is not None and req.num_predict > 0 else 256
     name = req.name or f"{req.provider}/{req.model}"
     pool = get_pool()
     with pool.connection() as conn:
         row = conn.execute(
             """INSERT INTO agent.llm_config
-                   (name, provider, model, base_url, api_key, request_timeout_seconds, is_active, updated_by, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, FALSE, %s, %s)
+                   (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, is_active, updated_by, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s)
                RETURNING id""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, claims.sub, time.time()),
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, claims.sub, time.time()),
         ).fetchone()
         config_id = row[0] if row else None
 
@@ -653,16 +666,17 @@ async def update_llm_config(config_id: int, req: LLMConfigRequest, authorization
     from app.rag.store import get_pool
     import time
     timeout = req.request_timeout_seconds or 300
+    num_predict = req.num_predict if req.num_predict is not None and req.num_predict > 0 else 256
     name = req.name or f"{req.provider}/{req.model}"
     pool = get_pool()
     with pool.connection() as conn:
         row = conn.execute(
             """UPDATE agent.llm_config
                    SET name = %s, provider = %s, model = %s, base_url = %s,
-                       api_key = %s, request_timeout_seconds = %s,
+                       api_key = %s, request_timeout_seconds = %s, num_predict = %s,
                        updated_by = %s, updated_at = %s
                  WHERE id = %s RETURNING id, is_active""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, claims.sub, time.time(), config_id),
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, claims.sub, time.time(), config_id),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
@@ -723,7 +737,7 @@ async def test_llm_config(config_id: int, authorization: str = Header(...)):
     pool = get_pool()
     with pool.connection() as conn:
         row = conn.execute(
-            "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+            "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
             "FROM agent.llm_config WHERE id = %s",
             (config_id,),
         ).fetchone()
@@ -735,6 +749,7 @@ async def test_llm_config(config_id: int, authorization: str = Header(...)):
             base_url=row[2] or "",
             api_key=row[3] or "",
             request_timeout_seconds=row[4] or 300,
+            num_predict=row[5],
         )
 
     try:

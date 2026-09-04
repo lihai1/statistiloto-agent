@@ -91,10 +91,15 @@ def inject_pool(db_pool):
 # ── LLM mock ─────────────────────────────────────────────────
 
 def _discover_ollama_model(base_url: str) -> str:
-    """Query Ollama /api/tags and pick the smallest available chat model.
+    """Query Ollama /api/tags and pick the best available chat model.
 
-    Prefers models with 'tools' capability, then falls back to the smallest
-    model by size. Skips embedding-only models.
+    Preference order:
+    1. dicta-instruct-1.7b — Hebrew SOTA, fast (82 tok/s), tools-capable, 1.1 GB
+    2. dicta-il/DictaLM-3.0-1.7B-Thinking — Hebrew SOTA with reasoning, slower
+    3. Smallest tools-capable model (fallback)
+    4. Smallest model (last resort)
+
+    Skips embedding-only models.
     """
     import json
     import urllib.request
@@ -118,6 +123,16 @@ def _discover_ollama_model(base_url: str) -> str:
 
     if not models:
         return "qwen2.5:0.5b"
+
+    model_names = {m[0] for m in models}
+
+    # Prefer dicta-instruct-1.7b (Hebrew SOTA, fast, tools-capable).
+    if "dicta-instruct-1.7b" in model_names:
+        return "dicta-instruct-1.7b"
+
+    # Then prefer the Dicta Thinking variant (Hebrew SOTA with reasoning).
+    if "dicta-il/DictaLM-3.0-1.7B-Thinking:latest" in model_names:
+        return "dicta-il/DictaLM-3.0-1.7B-Thinking:latest"
 
     # Prefer models with 'tools' capability (needed for analyst/admin flows).
     tools_models = [m for m in models if "tools" in m[2]]

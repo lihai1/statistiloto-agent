@@ -142,6 +142,7 @@ def execute_tool(state: AnalystState) -> dict:
         raise
 
 
+@meter_llm
 def finalize(state: AnalystState) -> dict:
     """Set the final response from the draft, incorporating tool results if any.
     Also appends the current exchange to conversation history for the checkpointer.
@@ -179,7 +180,12 @@ def finalize(state: AnalystState) -> dict:
 
     updated_history = append_history(state, response)
     log.info("[analyst.finalize] SUCCESS user=%s session=%s response_len=%d", user_sub, session_id, len(response))
-    return {"response": response, "history": updated_history}
+    return {
+        "response": response,
+        "history": updated_history,
+        "_usage": getattr(resp, "usage_metadata", None) if tool_result else None,
+        "_response_metadata": getattr(resp, "response_metadata", None) if tool_result else None,
+    }
 
 
 def _call_tool(tool_name: str, args: dict, user_sub: str, jwt_token: str) -> dict:

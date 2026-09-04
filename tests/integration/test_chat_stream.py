@@ -91,3 +91,19 @@ class TestChatStream:
                 "SELECT session_id FROM agent.chat_sessions WHERE session_id = 'stream-6'"
             ).fetchone()
         assert row is not None
+
+    def test_stream_hebrew_response(self, client, free_headers):
+        """Streaming with Hebrew input produces a non-empty SSE response.
+
+        This verifies the dicta-instruct-1.7b model works through the
+        streaming endpoint with Hebrew input.
+        """
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-hebrew", "message": "מה זה מספרים חמים?"},
+            headers=free_headers,
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        body = resp.text
+        assert "event: done" in body
