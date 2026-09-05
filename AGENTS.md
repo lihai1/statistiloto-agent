@@ -19,6 +19,11 @@ Python LangGraph agent worker with hierarchical multi-agent orchestration (Optio
 - **UI context** — the supervisor accepts an optional structured `context` dict (page, selected numbers, groupSize, etc.) from the BFF `/chat` request, forwarded to workers for grounding.
 - **Shared prompts** — `app/prompts.py` centralizes domain-knowledge and language-rule constants used by all three worker subgraphs.
 - **Docs RAG ingestion** — `app/rag/ingest.py` loads markdown from `app/rag/docs_source/` into the `docs` corpus with content-hash dedup; triggered by `POST /reindex` (admin).
+- **Redis streaming** — `POST /chat/stream` publishes progress events to Redis channel `agent:stream:{thread_id}` and returns `{thread_id, channel}`; falls back to inline SSE when Redis is unavailable. SSE event names are `progress`, `paused`, `done`, `error`.
+- **Multi-request detection** — `app/graphs/supervisor.py` splits messages on EN/HE conjunctions; when multiple operations are detected it asks the user to pick one. Generate-then-save is exempted.
+- **Domain registry** — `app/domain_registry.py` provides deterministic explanations for terms including the new `lucky_numbers` and `saved_numbers`.
+- **Tool error propagation** — `app/tools/__init__.py` defines `ToolError` for clean exception typing from tools.
+- **Admin command keyword map** — `app/rag/admin_commands.yaml` maps keyword phrases to admin tools (`read_token_usage`, `query_audit_log`, `search_web`, `list_db_tables`, `query_db`, etc.) for the `admin_ops` guard.
 
 ## Tool classification (HITL gating)
 
@@ -41,7 +46,7 @@ Read-only tools (execute without HITL):
 - `list_db_tables` — list tables and columns in a DB schema (admin only)
 - `query_db` — read-only SQL SELECT against any schema (admin only)
 
-Classification is in `app/tools/registry.py` — `WRITE_TOOLS` and `READ_TOOLS` frozensets.
+Classification is in `app/tools/registry.py` — `WRITE_TOOLS` and `READ_TOOLS` frozensets. Admin-specific tool dispatch is additionally driven by keyword mappings in `app/rag/admin_commands.yaml`.
 
 ## Tier capabilities
 
@@ -98,6 +103,7 @@ make test-integration # integration tests only (needs DB) — 36 tests
 - `JWT_VERIFY` — false to skip JWT signature verification (dev/test)
 - `LOTTERY_GRPC_HOST` — Go lottery service host (empty = tools return empty)
 - `BFF_BASE_URL` — Java BFF base URL (empty = saved_numbers tools return empty)
+- `REDIS_URL` — Optional Redis URL; enables Redis pub/sub for `/chat/stream` (falls back to inline SSE if unset)
 
 ### Test conventions
 

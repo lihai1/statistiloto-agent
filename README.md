@@ -13,6 +13,7 @@
 - **Pydantic / pydantic-settings** — request/response models, config validation
 - **structlog** — structured logging
 - **SSE (sse-starlette)** — server-sent events for streaming chat responses
+- **Redis** — optional pub/sub backend for `/chat/stream` (falls back to inline SSE when unavailable)
 
 ## Architecture
 
@@ -38,7 +39,7 @@ flowchart LR
     Agent -->|SSE events| BFF
 ```
 
-The **supervisor graph** is the single choke point for tier gating. It routes by `tier` + `intent` to one of three worker subgraphs. Disallowed intents are downgraded to `nl_assistant`.
+The **supervisor graph** is the single choke point for tier gating. It routes by `tier` + `intent` to one of three worker subgraphs. Disallowed intents are downgraded to `nl_assistant`. It also detects multi-operation messages (`_detect_multiple_requests()`) and asks the user to pick one, with a generate-then-save exemption. Deterministic domain explanations (incl. `lucky_numbers` and `saved_numbers`) come from `app/domain_registry.py`.
 
 ## Tier Capabilities
 
@@ -59,7 +60,8 @@ The **supervisor graph** is the single choke point for tier gating. It routes by
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/chat` | any authenticated user | Process a chat message. Returns `{response, thread_id}` or `{paused: true, thread_id}` for HITL. Uses SSE for streaming. |
+| `POST` | `/chat` | any authenticated user | Process a chat message. Returns `{response, thread_id}` or `{paused: true, thread_id}` for HITL. |
+| `POST` | `/chat/stream` | any authenticated user | Stream chat events. Returns `{thread_id, channel}` for Redis subscription; falls back to inline SSE. Emits `progress`, `paused`, `done`, `error` events. |
 | `POST` | `/approve` | any authenticated user | Resume a paused HITL thread with a human decision (`approved: bool`, optional `edited` value). |
 | `GET` | `/healthz` | none | Health check — returns `{"status": "ok"}`. |
 | `GET` | `/sessions` | any authenticated user | List the caller's chat sessions (newest first) with the tier's session limit. |
@@ -103,6 +105,8 @@ Tools are classified in `app/tools/registry.py` as `WRITE_TOOLS` and `READ_TOOLS
 | `search_web` | DuckDuckGo (admin only) | Public web search |
 | `read_code` | local FS (admin only) | Reads a file from the agent's source tree |
 | `list_files` | local FS (admin only) | Lists files under a directory |
+| `list_db_tables` | DB (admin only) | Lists tables and columns in a schema |
+| `query_db` | DB (admin only) | Runs a read-only SQL SELECT |
 
 ## Project Structure
 
@@ -124,6 +128,9 @@ agent/
 │   ├── checkpointer.py        # PostgresSaver checkpointer management
 │   ├── prompts.py             # Shared LLM prompt constants (domain knowledge, language rules)
 │   ├── sessions.py            # Chat session history (list/load/delete) + tier retention limits
+│   ├── redis_client.py        # Optional Redis pub/sub client for /chat/stream events
+│   ├── renderer.py            # Zero-LLM deterministic response renderer
+│   ├── domain_registry.py     # Canonical domain definitions (incl. lucky_numbers, saved_numbers)
 │   ├── config/
 │   │   ├── settings.py        # YAML + env config, tier configs
 │   │   └── agent.yaml         # Default config values
@@ -142,6 +149,7 @@ agent/
 │   │   ├── retriever.py       # Role-scoped, per-tenant pgvector retrieval
 │   │   ├── indexers.py        # Document indexing into pgvector
 │   │   ├── ingest.py          # Docs ingestion (markdown → embeddings, content-hash dedup)
+│   │   ├── admin_commands.yaml # Keyword → admin tool mappings for admin_ops
 │   │   └── docs_source/       # Product docs (.md) indexed into the 'docs' corpus
 │   ├── llm/
 │   │   ├── config_store.py    # Global LLM config store + hot-reload poller
@@ -212,6 +220,7 @@ Settings are loaded from `app/config/agent.yaml` with environment variable overr
 | `LOTTERY_GRPC_HOST` | `lottery` | Go lottery service host (empty = tools return empty) |
 | `LOTTERY_GRPC_PORT` | `9090` | Go lottery service gRPC port |
 | `BFF_BASE_URL` | `http://server:8082` | Java BFF base URL (empty = saved_numbers tools return empty) |
+| `REDIS_URL` | _(empty)_ | Optional Redis URL (e.g. `redis://localhost:6379`). If unset, `/chat/stream` falls back to inline SSE. |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | `300` | LLM request timeout in seconds |
 | `AGENT_LOG_LEVEL` | `INFO` | Logging level |
 

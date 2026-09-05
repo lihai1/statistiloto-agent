@@ -39,9 +39,51 @@ sequenceDiagram
     alt HITL triggered (write tool)
         Agent-->>BFF: {paused: true, thread_id}
     else Normal completion
-        Agent-->>BFF: {response, thread_id} (SSE events)
+        Agent-->>BFF: {response, thread_id} (JSON body)
     end
 ```
+
+## Chat Stream Flow
+
+```mermaid
+sequenceDiagram
+    participant BFF as Java BFF
+    participant Agent as Agent (FastAPI)
+    participant Redis as Redis
+
+    BFF->>Agent: POST /chat/stream {session_id, message, intent, context, config_id, lang}
+    Agent->>Agent: validate JWT, build thread_id, load history
+    alt Redis available
+        Agent->>Redis: set agent:stream:{thread_id}:status = active
+        Agent-->>BFF: {thread_id, channel: "agent:stream:{thread_id}"}
+        Agent->>Agent: run graph in background task
+        loop graph.stream() emits updates
+            Agent->>Redis: PUBLISH {event: "progress", node, label}
+        end
+        alt HITL paused
+            Agent->>Redis: PUBLISH {event: "paused", thread_id}
+        else done
+            Agent->>Redis: PUBLISH {event: "done", response, thread_id}
+        end
+        Agent->>Redis: DEL agent:stream:{thread_id}:status
+    else Redis unavailable
+        Agent-->>BFF: text/event-stream (SSE)
+        Agent->>Agent: run graph, collect chunks
+        Agent-->>BFF: event: progress {node, label}
+        alt HITL paused
+            Agent-->>BFF: event: paused {thread_id}
+        else done
+            Agent-->>BFF: event: done {response, thread_id}
+        else error
+            Agent-->>BFF: event: error {message}
+        end
+    end
+```
+
+**Notes**:
+- Redis path publishes events with an `event` JSON field, not `type`.
+- Event names are `progress`, `paused`, `done`, `error`.
+- The non-streaming `POST /chat` remains a JSON endpoint.
 
 ## Human-in-the-Loop (HITL) Flow
 
@@ -84,6 +126,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Start([Incoming chat request]) --> Classify{"classify_intent()<br/>tier + intent"}
+    Classify -->|"multiple distinct ops<br/>detected"| Multi["direct_multi_request<br/>(ask user to pick one)"]
     Classify -->|"intent = admin_ops<br/>AND tier = admin"| AdminOps["admin_ops subgraph<br/>(admin only)"]
     Classify -->|"intent = admin_ops<br/>AND tier != admin"| Downgrade1["DOWNGRADE → nl_assistant"]
     Classify -->|"intent = analyst<br/>AND tier = paid/admin"| Analyst["analyst subgraph<br/>(paid/admin)"]
@@ -94,6 +137,7 @@ flowchart TD
     AdminOps --> End([END → return response])
     Analyst --> End
     NL --> End
+    Multi --> End
     Downgrade1 --> NL
     Downgrade2 --> NL
     NLDefault --> NL

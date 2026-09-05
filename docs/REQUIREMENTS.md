@@ -4,7 +4,8 @@
 
 ### Chat (SSE)
 
-- **FR-1**: The agent shall expose `POST /chat` accepting `{session_id, message, intent, context, config_id, lang}` and returning either a `{response, thread_id}` JSON body or a `{paused: true, thread_id}` body when HITL is triggered. `config_id` optionally overrides the active LLM with a stored config for this request only. `lang` optionally hints the response language (`he`/`en`).
+- **FR-1**: The agent shall expose `POST /chat` accepting `{session_id, message, intent, context, config_id, lang}` and returning either a `{response, thread_id}` JSON body or a `{paused: true, thread_id}` body when HITL is triggered. `config_id` optionally overrides the active LLM with a stored config for this request only. `lang` optionally hints the response language (`he`/`en`). `POST /chat` does NOT stream; it returns a single JSON response.
+- **FR-1a**: The agent shall expose `POST /chat/stream` with the same request shape. When Redis is available it shall return a JSON body `{thread_id, channel}` where `channel` is `agent:stream:{thread_id}`, and publish incremental events to that channel. When Redis is unavailable it shall fall back to inline SSE (`text/event-stream`). Event names shall be `progress`, `paused`, `done`, and `error`, and each event payload shall use the JSON field `event` (not `type`) to carry the event name.
 - **FR-2**: Every chat request shall be authenticated via a JWT Bearer token in the `Authorization` header.
 - **FR-3**: The agent shall persist conversation state per `thread_id` (`{user_sub}:{session_id}`) using a PostgresSaver checkpointer, enabling multi-turn memory within a session.
 - **FR-4**: The agent shall apply a per-tier recursion limit to `graph.invoke()` to cap graph super-steps and prevent infinite loops.
@@ -15,6 +16,11 @@
 - **FR-11**: On interrupt, the agent shall return `{paused: true, thread_id}` (HTTP 200) so the UI can present an approval dialog.
 - **FR-12**: The agent shall expose `POST /approve` accepting `{session_id, approved, edited}` to resume a paused thread via `Command(resume={approved, edited})`.
 - **FR-13**: HITL is NOT configurable per tier — it always triggers on write tools. Free tier never sees HITL because free tier has no write tools.
+
+### Multi-request detection
+
+- **FR-14**: If a single user message contains multiple distinct operations (detected by splitting on English and Hebrew conjunctions), the supervisor shall respond with `direct_multi_request` asking the user to choose one operation, and shall not proceed with tool execution or LLM planning.
+- **FR-15**: The multi-request detection shall exempt the generate-then-save workflow (messages containing both a generate/form request and a save request), treating it as a single operation.
 
 ### RAG (Retrieval-Augmented Generation)
 
@@ -82,9 +88,11 @@
 ## Tool Requirements
 
 - **TR-1**: All tools shall be classified as either `WRITE_TOOLS` or `READ_TOOLS` in `app/tools/registry.py` (frozensets).
+- **TR-1a**: Tools shall raise `ToolError` (defined in `app/tools/__init__.py`) for clean exception typing; the supervisor and workers may catch it separately from auth or system errors.
 - **TR-2**: `WRITE_TOOLS` (`save_numbers`, `trigger_scraper`, `edit_file`) shall require HITL approval before executing — the graph interrupts automatically.
 - **TR-3**: `READ_TOOLS` (`generate_form`, `get_statistics`, `analyze`, `list_saved_numbers`, `query_audit_log`, `read_token_usage`, `search_web`, `read_code`, `list_files`, `list_db_tables`, `query_db`) shall execute without HITL.
 - **TR-4**: Tool availability shall be gated by tier — the supervisor downgrades disallowed intents to `nl_assistant`.
+- **TR-4a**: Admin tools in `admin_ops` shall be dispatched using keyword → tool mappings loaded from `app/rag/admin_commands.yaml`.
 - **TR-5**: Tools shall gracefully degrade when backend services are unavailable (empty `LOTTERY_GRPC_HOST` → tools return empty; empty `BFF_BASE_URL` → saved_numbers tools return empty).
 
 ## LLM Requirements
