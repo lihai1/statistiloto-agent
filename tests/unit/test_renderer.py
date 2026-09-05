@@ -11,6 +11,7 @@ from app.renderer import (
     render_statistics_result,
     render_generate_form_result,
     render_analyze_result,
+    render_multi_request,
 )
 
 
@@ -157,3 +158,32 @@ class TestRenderStatisticsRegression:
         )
         assert "1 + 2" in result
         assert "5" in result
+
+
+# ── multi_request (#15) ────────────────────────────────────────
+
+
+class TestRenderMultiRequest:
+    def test_render_multi_request_en(self):
+        result = render_multi_request(
+            ["generate 5 forms", "analyze 1,2,3"], "en",
+        )
+        assert "one request at a time" in result.lower()
+        assert "1." in result
+        assert "2." in result
+        assert "generate 5 forms" in result
+        assert "analyze 1,2,3" in result
+
+    def test_render_multi_request_he(self):
+        result = render_multi_request(
+            ["צור 5 טפסים", "נתח 1,2,3"], "he",
+        )
+        assert any("\u0590" <= c <= "\u05FF" for c in result)
+        assert "1." in result
+        assert "2." in result
+
+    def test_render_multi_request_single(self):
+        """Even a single request renders the pick-one message."""
+        result = render_multi_request(["generate 5 forms"], "en")
+        assert "one request at a time" in result.lower()
+        assert "generate 5 forms" in result

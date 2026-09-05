@@ -12,6 +12,8 @@ the graph pauses for human approval before executing. Read-only actions
 from __future__ import annotations
 
 import logging
+import os
+from functools import lru_cache
 from typing import Optional
 
 from langgraph.graph import StateGraph, START, END
@@ -27,6 +29,36 @@ from app.graphs.common import format_history, append_history, make_retrieve_node
 from app.graphs.tool_parser import parse_tool_call
 
 log = logging.getLogger(__name__)
+
+
+# ── Data-driven admin commands (loaded from YAML) ─────────────
+
+@lru_cache(maxsize=1)
+def load_admin_commands() -> list[dict]:
+    """Load admin command keyword→tool mappings from YAML (cached at module level).
+
+    The YAML file (app/rag/admin_commands.yaml) defines commands with:
+      - keywords: list of strings to match in the user message
+      - tool: the tool name to invoke
+      - args: default arguments
+      - description: human-readable description
+      - dynamic_args (optional): args computed from tool_args/state at runtime
+
+    Returns a list of command dicts. Falls back to an empty list if the
+    file cannot be loaded.
+    """
+    import yaml
+    yaml_path = os.path.join(os.path.dirname(__file__), "..", "rag", "admin_commands.yaml")
+    yaml_path = os.path.normpath(yaml_path)
+    try:
+        with open(yaml_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        commands = data.get("commands", [])
+        log.debug("[admin_ops] Loaded %d admin commands from %s", len(commands), yaml_path)
+        return commands
+    except Exception as e:
+        log.warning("[admin_ops] Failed to load admin_commands.yaml: %s — using empty list", e)
+        return []
 
 
 class AdminOpsState(TypedDict):
@@ -124,32 +156,29 @@ def plan_action(state: AdminOpsState) -> dict:
 
         # Small-model guard: for well-known admin phrases, force the right tool
         # even if the LLM picked a different one (or none).
+        # The keyword→tool mappings are data-driven from admin_commands.yaml.
         message_lower = state["message"].lower()
         expected = None
-        if any(k in message_lower for k in ("token", "usage", "cost")):
-            expected = ("read_token_usage", {"days": 7})
-        elif any(k in message_lower for k in ("audit", "log")):
-            expected = ("query_audit_log", {"limit": 50})
-        elif any(k in message_lower for k in ("scrape", "scraper", "refresh draws")):
-            expected = ("trigger_scraper", {})
-        elif any(k in message_lower for k in ("search the web", "look up", "find online")):
-            expected = ("search_web", {
-                "query": tool_args.get("query", state["message"].strip()),
-                "limit": tool_args.get("limit", 5),
-            })
-        elif any(k in message_lower for k in ("tables in", "schema", "what tables")):
-            expected = ("list_db_tables", {"schema": tool_args.get("schema", "agent")})
-        elif any(k in message_lower for k in ("show me the users", "who is using", "list users", "show users", "all users")):
-            expected = ("query_db", {
-                "sql": "SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier",
-                "limit": tool_args.get("limit", 50),
-            })
-        elif any(k in message_lower for k in ("chat sessions", "show sessions", "list sessions", "active sessions")):
-            expected = ("query_db", {
-                "sql": "SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC",
-                "limit": tool_args.get("limit", 50),
-            })
-        else:
+
+        # Data-driven keyword matching from YAML.
+        for cmd in load_admin_commands():
+            keywords = cmd.get("keywords", [])
+            if any(k in message_lower for k in keywords):
+                tool_name = cmd["tool"]
+                # Start with default args, then apply dynamic args.
+                args = dict(cmd.get("args", {}))
+                dynamic = cmd.get("dynamic_args", {})
+                for arg_name, expr in dynamic.items():
+                    try:
+                        args[arg_name] = eval(expr, {}, {"tool_args": tool_args, "state": state})
+                    except Exception:
+                        pass  # keep default if dynamic eval fails
+                expected = (tool_name, args)
+                break
+
+        # Fall back to app-path-based logic (not data-driven — depends on
+        # extracting a path from the message and complex conditionals).
+        if expected is None:
             app_path = _extract_app_path(state["message"])
             if app_path:
                 if any(k in message_lower for k in ("show me", "read", "view")) and app_path.endswith(".py"):

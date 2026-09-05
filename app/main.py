@@ -62,6 +62,7 @@ class LLMConfigRequest(BaseModel):
     api_key: str | None = Field(default=None, alias="apiKey")
     request_timeout_seconds: int | None = Field(default=None, alias="requestTimeoutSeconds")
     num_predict: int | None = Field(default=None, alias="numPredict")  # max tokens to generate
+    context_window_size: int | None = Field(default=None, alias="contextWindowSize")  # context window in tokens
 
 
 class FreeLlmToggleRequest(BaseModel):
@@ -175,7 +176,7 @@ def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
         pool = get_pool()
         with pool.connection() as conn:
             row = conn.execute(
-                "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
+                "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size "
                 "FROM agent.llm_config WHERE id = %s",
                 (config_id,),
             ).fetchone()
@@ -187,6 +188,7 @@ def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
                     api_key=row[3] or "",
                     request_timeout_seconds=row[4] or 300,
                     num_predict=row[5],
+                    context_window_size=row[6] if len(row) > 6 else None,
                 )
     except Exception as e:
         log.warning("[chat] Failed to read config_id=%s: %s", config_id, e)
@@ -390,6 +392,15 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
       - event: paused    {thread_id}     — HITL interrupt (write tool)
       - event: error     {message}       — on failure
 
+    When Redis is available, the graph runs in a background thread that
+    publishes each chunk to the Redis channel ``agent:stream:{thread_id}``
+    as it arrives. The HTTP response returns immediately with JSON
+    ``{"thread_id": ..., "channel": "agent:stream:..."}`` so the client
+    can subscribe to the channel for incremental updates.
+
+    When Redis is NOT available, falls back to inline SSE: the graph runs
+    in a thread, chunks are collected, then emitted as SSE events.
+
     The existing POST /chat remains unchanged as a compatibility/fallback endpoint.
     """
     try:
@@ -413,6 +424,93 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
             if override_cfg is None:
                 raise HTTPException(status_code=404, detail=f"LLM config {req.config_id} not found")
 
+    # ── Redis path: publish chunks to a channel, return immediately ──
+    from app.redis_client import is_redis_available, publish_event, get_redis
+    redis_ok = await is_redis_available()
+    if redis_ok:
+        import asyncio
+
+        graph, thread_id, config, history, prev_conv_state = _setup_chat_request(claims, req)
+        state = _build_stream_state(claims, req, history, prev_conv_state)
+        channel = f"agent:stream:{thread_id}"
+        status_key = f"agent:stream:{thread_id}:status"
+
+        # Mark the stream as active (1-hour TTL).
+        try:
+            redis_client = get_redis()
+            if redis_client is not None:
+                await redis_client.setex(status_key, 3600, "active")
+        except Exception as e:
+            log.warning("[chat.stream] Failed to set stream status key: %s", e)
+
+        # Set the LLM override in this async context.
+        override_token = None
+        if override_cfg is not None:
+            try:
+                override_llm = build_llm(override_cfg)
+                override_token = set_llm_override(override_llm)
+            except Exception as e:
+                log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
+
+        async def _run_redis_stream():
+            """Run graph.stream() in a thread, publishing each chunk to Redis."""
+            try:
+                def _run_stream():
+                    """Run graph.stream() in a thread (sync checkpointer).
+
+                    Publishes each chunk to the Redis channel as it arrives
+                    so subscribers see incremental progress (not batched).
+                    """
+                    import asyncio as _aio
+                    loop = _aio.get_event_loop()
+                    for chunk in graph.stream(state, config, stream_mode="updates"):
+                        if isinstance(chunk, dict):
+                            for node_name in chunk:
+                                label = _NODE_LABELS.get(node_name, node_name.replace("_", " ").title())
+                                event = {"event": "progress", "node": node_name, "label": label}
+                                # Schedule the publish on the event loop.
+                                _aio.run_coroutine_threadsafe(
+                                    publish_event(channel, event), loop,
+                                )
+
+                await asyncio.to_thread(_run_stream)
+
+                # Check final state for HITL interrupt or response.
+                final_state = graph.get_state(config)
+                if final_state and final_state.next:
+                    log.info("[chat.stream] PAUSED user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
+                    _record_session(claims, req, history)
+                    await publish_event(channel, {"event": "paused", "thread_id": thread_id})
+                else:
+                    values = final_state.values if final_state else {}
+                    response = values.get("response") if isinstance(values, dict) else None
+                    log.info("[chat.stream] DONE user=%s session=%s response_len=%d",
+                             claims.sub, req.session_id, len(response) if response else 0)
+                    _record_session(claims, req, history)
+                    await publish_event(channel, {"event": "done", "response": response, "thread_id": thread_id})
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                log.error("[chat.stream] ERROR user=%s session=%s type=%s msg=%s",
+                          claims.sub, req.session_id, error_type, error_msg, exc_info=True)
+                await publish_event(channel, {"event": "error", "message": f"{error_type}: {error_msg}"})
+            finally:
+                if override_token is not None:
+                    reset_llm_override(override_token)
+                # Clear the active-stream status key.
+                try:
+                    redis_client = get_redis()
+                    if redis_client is not None:
+                        await redis_client.delete(status_key)
+                except Exception:
+                    pass
+
+        # Fire-and-forget the background stream task.
+        asyncio.create_task(_run_redis_stream())
+
+        return {"thread_id": thread_id, "channel": channel}
+
+    # ── Fallback: inline SSE (Redis not available) ──
     async def _stream_generator():
         """Yield SSE events from graph.stream()."""
         import asyncio
@@ -537,6 +635,7 @@ async def get_llm_config(authorization: str = Header(...)):
         "api_key": cfg.api_key,
         "request_timeout_seconds": cfg.request_timeout_seconds,
         "num_predict": cfg.num_predict,
+        "context_window_size": cfg.context_window_size,
     }
 
 
@@ -564,10 +663,10 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
         conn.execute("UPDATE agent.llm_config SET is_active = FALSE WHERE is_active = TRUE")
         conn.execute(
             """INSERT INTO agent.llm_config
-                   (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, is_active, updated_by, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
+                   (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size, is_active, updated_by, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
                RETURNING id""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, claims.sub, time.time()),
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time()),
         )
 
     # Force immediate refresh instead of waiting for the poller.
@@ -580,6 +679,7 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
         "name": name,
         "request_timeout_seconds": timeout,
         "num_predict": num_predict,
+        "context_window_size": req.context_window_size,
         "note": "Hot-reloaded — no restart needed",
     }
 
@@ -597,7 +697,7 @@ async def list_llm_configs(authorization: str = Header(...)):
     pool = get_pool()
     with pool.connection() as conn:
         rows = conn.execute(
-            """SELECT id, name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, is_active, updated_at
+            """SELECT id, name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size, is_active, updated_at
                FROM agent.llm_config
                ORDER BY is_active DESC, updated_at DESC"""
         ).fetchall()
@@ -613,8 +713,9 @@ async def list_llm_configs(authorization: str = Header(...)):
             "api_key": r[5] or "",
             "request_timeout_seconds": r[6],
             "num_predict": r[7],
-            "is_active": r[8],
-            "updated_at": r[9],
+            "context_window_size": r[8] if len(r) > 8 else None,
+            "is_active": r[9] if len(r) > 9 else r[8],
+            "updated_at": r[10] if len(r) > 10 else r[9],
         })
     return {"configs": configs}
 
@@ -640,10 +741,10 @@ async def create_llm_config(req: LLMConfigRequest, authorization: str = Header(.
     with pool.connection() as conn:
         row = conn.execute(
             """INSERT INTO agent.llm_config
-                   (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, is_active, updated_by, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s)
+                   (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size, is_active, updated_by, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s)
                RETURNING id""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, claims.sub, time.time()),
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time()),
         ).fetchone()
         config_id = row[0] if row else None
 
@@ -674,9 +775,10 @@ async def update_llm_config(config_id: int, req: LLMConfigRequest, authorization
             """UPDATE agent.llm_config
                    SET name = %s, provider = %s, model = %s, base_url = %s,
                        api_key = %s, request_timeout_seconds = %s, num_predict = %s,
+                       context_window_size = %s,
                        updated_by = %s, updated_at = %s
                  WHERE id = %s RETURNING id, is_active""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, claims.sub, time.time(), config_id),
+            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time(), config_id),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
@@ -721,10 +823,12 @@ async def activate_llm_config(config_id: int, authorization: str = Header(...)):
 
 @app.post("/llm-configs/{config_id}/test")
 async def test_llm_config(config_id: int, authorization: str = Header(...)):
-    """Test that a saved LLM config can actually connect and respond (admin only).
+    """Test that a saved LLM config can actually connect (admin only).
 
-    Builds a temporary LLM instance from the saved config (without activating it)
-    and sends a minimal ping message. Returns ok/error with the response or error message.
+    Uses ``check_connection`` to verify connectivity and credentials
+    without sending an inference request (no token cost). Returns
+    ``{"status": "ok", "id": ..., "response": detail}`` on success or
+    ``{"status": "error", "id": ..., "response": error_msg}`` on failure.
     """
     try:
         claims = validate_jwt(authorization)
@@ -733,11 +837,11 @@ async def test_llm_config(config_id: int, authorization: str = Header(...)):
         raise HTTPException(status_code=403, detail=str(e))
 
     from app.rag.store import get_pool
-    from app.llm.config_store import LLMConfig, build_llm
+    from app.llm.config_store import LLMConfig, check_connection
     pool = get_pool()
     with pool.connection() as conn:
         row = conn.execute(
-            "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
+            "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size "
             "FROM agent.llm_config WHERE id = %s",
             (config_id,),
         ).fetchone()
@@ -750,17 +854,14 @@ async def test_llm_config(config_id: int, authorization: str = Header(...)):
             api_key=row[3] or "",
             request_timeout_seconds=row[4] or 300,
             num_predict=row[5],
+            context_window_size=row[6] if len(row) > 6 else None,
         )
 
-    try:
-        llm = build_llm(cfg)
-        from langchain_core.messages import HumanMessage
-        resp = await llm.ainvoke([HumanMessage(content="ping")])
-        text = resp.content if hasattr(resp, "content") else str(resp)
-        return {"status": "ok", "id": config_id, "response": text[:200]}
-    except Exception as e:
-        log.warning("[llm-configs.test] config_id=%s failed: %s", config_id, e)
-        return {"status": "error", "id": config_id, "error": str(e)[:500]}
+    ok, detail = await check_connection(cfg)
+    if ok:
+        return {"status": "ok", "id": config_id, "response": detail}
+    log.warning("[llm-configs.test] config_id=%s failed: %s", config_id, detail)
+    return {"status": "error", "id": config_id, "response": detail}
 
 
 @app.delete("/llm-configs/{config_id}")

@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS agent.llm_config (
     api_key     TEXT,                       -- encrypt with pgcrypto in prod
     request_timeout_seconds INT NOT NULL DEFAULT 300,  -- max seconds for a single LLM call
     num_predict INT,                          -- max tokens to generate (NULL = model default)
+    context_window_size INT,                  -- context window size in tokens (NULL = model default)
     is_active   BOOLEAN NOT NULL DEFAULT FALSE,  -- only one row should be active at a time
     updated_by  TEXT NOT NULL,              -- admin user_sub
     updated_at  DOUBLE PRECISION NOT NULL
@@ -68,6 +69,11 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='agent' AND table_name='llm_config' AND column_name='num_predict')
     THEN
         ALTER TABLE agent.llm_config ADD COLUMN num_predict INT;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='agent' AND table_name='llm_config')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='agent' AND table_name='llm_config' AND column_name='context_window_size')
+    THEN
+        ALTER TABLE agent.llm_config ADD COLUMN context_window_size INT;
     END IF
 END $$;
 -- Ensure at most one active config. Uses a partial unique index.

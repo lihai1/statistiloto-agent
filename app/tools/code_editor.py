@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from app.tools import ToolError
+
 log = logging.getLogger(__name__)
 
 
@@ -35,13 +37,13 @@ def read_code(file_path: str) -> dict:
     try:
         target = _resolve(file_path)
         if not target.exists():
-            return {"error": f"File not found: {file_path}"}
+            raise ToolError(f"File not found: {file_path}")
         if target.is_dir():
-            return {"error": f"Path is a directory: {file_path}"}
+            raise ToolError(f"Path is a directory: {file_path}")
         # Refuse binary or very large files (> 1 MB).
         size = target.stat().st_size
         if size > 1_000_000:
-            return {"error": f"File too large ({size} bytes)"}
+            raise ToolError(f"File too large ({size} bytes)")
         content = target.read_text(encoding="utf-8")
         return {
             "path": str(target),
@@ -49,11 +51,13 @@ def read_code(file_path: str) -> dict:
             "lines": content.count("\n") + 1,
             "content": content,
         }
+    except ToolError:
+        raise
     except ValueError as e:
-        return {"error": str(e)}
+        raise ToolError(str(e))
     except Exception as e:
         log.warning("[read_code] failed: %s", e)
-        return {"error": str(e)}
+        raise ToolError(str(e))
 
 
 def list_files(directory: str | None = None, max_results: int = 100) -> dict:
@@ -62,9 +66,9 @@ def list_files(directory: str | None = None, max_results: int = 100) -> dict:
         code_root = _get_code_root()
         target = _resolve(directory or ".")
         if not target.exists():
-            return {"error": f"Directory not found: {directory}"}
+            raise ToolError(f"Directory not found: {directory}")
         if not target.is_dir():
-            return {"error": f"Path is not a directory: {directory}"}
+            raise ToolError(f"Path is not a directory: {directory}")
 
         files = []
         for p in target.rglob("*"):
@@ -74,11 +78,13 @@ def list_files(directory: str | None = None, max_results: int = 100) -> dict:
             if len(files) >= max_results:
                 break
         return {"directory": str(target.relative_to(code_root)), "files": files}
+    except ToolError:
+        raise
     except ValueError as e:
-        return {"error": str(e)}
+        raise ToolError(str(e))
     except Exception as e:
         log.warning("[list_files] failed: %s", e)
-        return {"error": str(e)}
+        raise ToolError(str(e))
 
 
 def edit_file(file_path: str, old_string: str | None = None,
@@ -96,14 +102,14 @@ def edit_file(file_path: str, old_string: str | None = None,
     if new_string == "":
         new_string = None
     if content is None and (old_string is None or new_string is None):
-        return {"error": "edit_file requires either 'content' or both 'old_string' and 'new_string'"}
+        raise ToolError("edit_file requires either 'content' or both 'old_string' and 'new_string'")
 
     try:
         target = _resolve(file_path)
         if not target.exists():
-            return {"error": f"File not found: {file_path}"}
+            raise ToolError(f"File not found: {file_path}")
         if not target.is_file():
-            return {"error": f"Path is not a file: {file_path}"}
+            raise ToolError(f"Path is not a file: {file_path}")
 
         if content is not None:
             target.write_text(content, encoding="utf-8")
@@ -113,9 +119,9 @@ def edit_file(file_path: str, old_string: str | None = None,
         text = target.read_text(encoding="utf-8")
         occurrences = text.count(old_string)
         if occurrences == 0:
-            return {"error": f"old_string not found in {file_path}"}
+            raise ToolError(f"old_string not found in {file_path}")
         if occurrences > 1:
-            return {"error": f"old_string is not unique in {file_path} ({occurrences} matches)"}
+            raise ToolError(f"old_string is not unique in {file_path} ({occurrences} matches)")
         new_text = text.replace(old_string, new_string, 1)
         target.write_text(new_text, encoding="utf-8")
         return {
@@ -125,8 +131,10 @@ def edit_file(file_path: str, old_string: str | None = None,
             "old_string": old_string,
             "new_string": new_string,
         }
+    except ToolError:
+        raise
     except ValueError as e:
-        return {"error": str(e)}
+        raise ToolError(str(e))
     except Exception as e:
         log.warning("[edit_file] failed: %s", e)
-        return {"error": str(e)}
+        raise ToolError(str(e))

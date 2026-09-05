@@ -33,6 +33,7 @@ class LLMConfig:
     api_key: str = ""
     request_timeout_seconds: int = 300
     num_predict: int | None = None  # max tokens to generate (None = model default)
+    context_window_size: int | None = None  # context window size in tokens (None = model default)
 
 
 def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
@@ -57,35 +58,118 @@ def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
         }
         if cfg.num_predict is not None:
             kwargs["num_predict"] = cfg.num_predict
+        if cfg.context_window_size is not None:
+            kwargs["num_ctx"] = cfg.context_window_size
         return ChatOllama(**kwargs)
 
     if cfg.provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model=cfg.model,
-            google_api_key=cfg.api_key,
-            timeout=timeout,
-        )
+        gemini_kwargs: dict = {
+            "model": cfg.model,
+            "google_api_key": cfg.api_key,
+            "timeout": timeout,
+        }
+        if cfg.context_window_size is not None:
+            gemini_kwargs["max_output_tokens"] = cfg.context_window_size
+        return ChatGoogleGenerativeAI(**gemini_kwargs)
 
     if cfg.provider == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model=cfg.model,
-            api_key=cfg.api_key,
-            base_url=cfg.base_url or "https://api.openai.com/v1",
-            timeout=timeout,
-        )
+        openai_kwargs: dict = {
+            "model": cfg.model,
+            "api_key": cfg.api_key,
+            "base_url": cfg.base_url or "https://api.openai.com/v1",
+            "timeout": timeout,
+        }
+        if cfg.context_window_size is not None:
+            openai_kwargs["max_tokens"] = cfg.context_window_size
+        return ChatOpenAI(**openai_kwargs)
 
     if cfg.provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(
-            model=cfg.model,
-            api_key=cfg.api_key,
-            base_url=cfg.base_url or "https://api.anthropic.com",
-            timeout=timeout,
-        )
+        anthropic_kwargs: dict = {
+            "model": cfg.model,
+            "api_key": cfg.api_key,
+            "base_url": cfg.base_url or "https://api.anthropic.com",
+            "timeout": timeout,
+        }
+        if cfg.context_window_size is not None:
+            anthropic_kwargs["max_tokens"] = cfg.context_window_size
+        return ChatAnthropic(**anthropic_kwargs)
 
     raise ValueError(f"Unknown LLM provider: {cfg.provider}")
+
+
+async def check_connection(cfg: LLMConfig) -> tuple[bool, str]:
+    """Test that an LLM provider is reachable without sending an inference request.
+
+    Uses lightweight HTTP GET endpoints (model lists / tags) to verify
+    connectivity and credentials. Returns ``(True, detail)`` on success or
+    ``(False, error_msg)`` on failure.
+
+    Args:
+        cfg: the LLM config to test (provider, base_url, api_key).
+    """
+    import httpx
+
+    provider = cfg.provider
+
+    if provider == "mock":
+        return True, "Mock provider"
+
+    if provider == "ollama":
+        base_url = (cfg.base_url or "http://ollama:11434").rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{base_url}/api/tags")
+                resp.raise_for_status()
+                data = resp.json()
+                n_models = len(data.get("models", []))
+                return True, f"Ollama connected, {n_models} models available"
+        except Exception as e:
+            return False, f"Ollama connection failed: {e}"
+
+    if provider == "openai":
+        base_url = (cfg.base_url or "https://api.openai.com/v1").rstrip("/")
+        try:
+            headers = {}
+            if cfg.api_key:
+                headers["Authorization"] = f"Bearer {cfg.api_key}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{base_url}/models", headers=headers)
+                resp.raise_for_status()
+                return True, "OpenAI connected"
+        except Exception as e:
+            return False, f"OpenAI connection failed: {e}"
+
+    if provider == "anthropic":
+        try:
+            headers = {}
+            if cfg.api_key:
+                headers["x-api-key"] = cfg.api_key
+                headers["anthropic-version"] = "2023-06-01"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://api.anthropic.com/v1/models", headers=headers,
+                )
+                resp.raise_for_status()
+                return True, "Anthropic connected"
+        except Exception as e:
+            return False, f"Anthropic connection failed: {e}"
+
+    if provider == "gemini":
+        try:
+            url = "https://generativelanguage.googleapis.com/v1/models"
+            if cfg.api_key:
+                url = f"{url}?key={cfg.api_key}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return True, "Gemini connected"
+        except Exception as e:
+            return False, f"Gemini connection failed: {e}"
+
+    return False, f"Unknown provider: {provider}"
 
 
 class LLMConfigStore:
@@ -153,16 +237,16 @@ class LLMConfigStore:
             if pool is None:
                 return None
             with pool.connection() as conn:
-                # Try the new schema: is_active column + request_timeout_seconds + num_predict.
+                # Try the new schema: is_active column + request_timeout_seconds + num_predict + context_window_size.
                 try:
                     row = conn.execute(
-                        "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
+                        "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size "
                         "FROM agent.llm_config WHERE is_active = TRUE LIMIT 1"
                     ).fetchone()
                     if not row:
                         # No active row — fall back to latest by updated_at.
                         row = conn.execute(
-                            "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
+                            "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size "
                             "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
                         ).fetchone()
                     if row:
@@ -173,11 +257,12 @@ class LLMConfigStore:
                             api_key=row[3] or "",
                             request_timeout_seconds=row[4] or 300,
                             num_predict=row[5],
+                            context_window_size=row[6] if len(row) > 6 else None,
                         )
                 except Exception:
                     # Column doesn't exist yet (pre-migration) — fall back
                     row = conn.execute(
-                        "SELECT provider, model, base_url, api_key, request_timeout_seconds "
+                        "SELECT provider, model, base_url, api_key, request_timeout_seconds, num_predict "
                         "FROM agent.llm_config ORDER BY updated_at DESC LIMIT 1"
                     ).fetchone()
                     if row:
@@ -187,6 +272,7 @@ class LLMConfigStore:
                             base_url=row[2] or "",
                             api_key=row[3] or "",
                             request_timeout_seconds=row[4] or 300,
+                            num_predict=row[5],
                         )
         except Exception as e:
             log.debug("Failed to read llm_config from DB: %s", e)

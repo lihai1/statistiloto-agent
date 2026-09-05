@@ -121,8 +121,8 @@ def _dispatch(tool_name: str, args: dict, claims: TokenClaims) -> Any:
     if tool_name == "query_db":
         from app.tools import admin_ops
         return admin_ops.query_db(claims=claims, sql=args.get("sql", ""), limit=args.get("limit", 50))
-    # Tools not yet implemented in admin_ops.py — return a clear error.
+    # Tools not yet implemented in admin_ops.py — raise a clear error.
     if tool_name in ("edit_file", "read_code", "list_files", "search_web"):
-        return {"error": f"Tool '{tool_name}' is not yet implemented."}
+        raise ValueError(f"Tool '{tool_name}' is not yet implemented.")
 
     raise ValueError(f"Unknown tool: {tool_name}")

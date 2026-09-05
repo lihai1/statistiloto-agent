@@ -107,3 +107,70 @@ class TestChatStream:
         assert "text/event-stream" in resp.headers.get("content-type", "")
         body = resp.text
         assert "event: done" in body
+
+
+class TestChatStreamRedis:
+    """Tests for the Redis pub/sub streaming path."""
+
+    def test_redis_path_returns_json_with_channel(self, client, free_headers, monkeypatch):
+        """When Redis is available, /chat/stream returns JSON with thread_id and channel."""
+        import asyncio
+        from app import redis_client
+
+        # Mock Redis client and availability check.
+        class MockRedis:
+            def __init__(self):
+                self.published = []
+                self._set_keys = {}
+
+            async def ping(self):
+                return True
+
+            async def publish(self, channel, message):
+                self.published.append((channel, message))
+
+            async def setex(self, key, ttl, value):
+                self._set_keys[key] = value
+
+            async def delete(self, key):
+                self._set_keys.pop(key, None)
+
+        mock_redis = MockRedis()
+        monkeypatch.setattr(redis_client, "_redis_client", mock_redis)
+        monkeypatch.setattr(redis_client, "_redis_checked", True)
+
+        async def _fake_available():
+            return True
+        monkeypatch.setattr(redis_client, "is_redis_available", _fake_available)
+
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "redis-1", "message": "Generate 5 lottery forms"},
+            headers=free_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "thread_id" in data
+        assert "channel" in data
+        assert data["channel"].startswith("agent:stream:")
+
+        # Reset redis_client state for other tests.
+        redis_client.reset_redis_client()
+
+    def test_redis_unavailable_falls_back_to_sse(self, client, free_headers, monkeypatch):
+        """When Redis is NOT available, /chat/stream falls back to inline SSE."""
+        from app import redis_client
+
+        async def _fake_available():
+            return False
+        monkeypatch.setattr(redis_client, "is_redis_available", _fake_available)
+
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "redis-fallback-1", "message": "Generate 5 lottery forms"},
+            headers=free_headers,
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        body = resp.text
+        assert "event: done" in body

@@ -24,6 +24,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 from app.config.settings import get_settings
+from app.tools import ToolError
 
 log = logging.getLogger(__name__)
 
@@ -122,8 +123,9 @@ def invalidate_tool_cache() -> None:
 def _cached(tool_name: str, kwargs: dict, fetch: Callable[[], dict]) -> dict:
     """Cache wrapper: check cache, call fetch on miss, store result.
 
-    Errors (results containing an 'error' key) are NOT cached — they may be
-    transient (service unavailable) and should be retried on the next call.
+    Errors (exceptions raised by fetch, or results containing an 'error'
+    key for backward compat) are NOT cached — they may be transient
+    (service unavailable) and should be retried on the next call.
     """
     cache = _get_cache()
     cached_result = cache.get(tool_name, kwargs)
@@ -206,11 +208,11 @@ def generate_form(how_many: int, form_type: int, will_be: list[int] | None = Non
             if fn:
                 return fn(how_many=how_many, form_type=form_type, will_be=will_be,
                           strength=strength, window_from=window_from, window_to=window_to)
-            return {"forms": [], "error": "Mock generate_form not configured"}
+            raise ToolError("Mock generate_form not configured")
 
         stub = _get_stub()
         if stub is None:
-            return {"forms": [], "error": "Lottery service unavailable"}
+            raise ToolError("Lottery service unavailable")
 
         from app.gen import lottery_pb2
         window = _build_window(window_from, window_to)
@@ -269,11 +271,11 @@ def get_statistics(how_many: int = 10, group_size: int = 2, strength: str | int 
             if fn:
                 return fn(how_many=how_many, group_size=group_size, strength=strength_val,
                           window_from=window_from, window_to=window_to)
-            return {"groups": [], "error": "Mock get_statistics not configured"}
+            raise ToolError("Mock get_statistics not configured")
 
         stub = _get_stub()
         if stub is None:
-            return {"groups": [], "error": "Lottery service unavailable"}
+            raise ToolError("Lottery service unavailable")
 
         from app.gen import lottery_pb2
         window = _build_window(window_from, window_to)
@@ -320,11 +322,11 @@ def analyze(form: list[int], window_from: str | None = None,
             fn = _mock_client.get("analyze")
             if fn:
                 return fn(form=form, window_from=window_from, window_to=window_to)
-            return {"frequency_groups": [], "archive_size": 0, "error": "Mock analyze not configured"}
+            raise ToolError("Mock analyze not configured")
 
         stub = _get_stub()
         if stub is None:
-            return {"frequency_groups": [], "archive_size": 0, "error": "Lottery service unavailable"}
+            raise ToolError("Lottery service unavailable")
 
         from app.gen import lottery_pb2
         window = _build_window(window_from, window_to)

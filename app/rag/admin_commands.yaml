@@ -1,0 +1,53 @@
+# Admin command keyword → tool mappings.
+# Loaded by app/graphs/admin_ops.py to drive the small-model guard.
+# Each entry maps a set of keywords to a tool name, default args, and a
+# human-readable description.
+
+commands:
+  - keywords: ["token", "usage", "cost"]
+    tool: read_token_usage
+    args: {days: 7}
+    description: "Check token usage and costs"
+
+  - keywords: ["audit", "log"]
+    tool: query_audit_log
+    args: {limit: 50}
+    description: "Query the audit log"
+
+  - keywords: ["scrape", "scraper", "refresh draws"]
+    tool: trigger_scraper
+    args: {}
+    description: "Trigger the lottery data scraper"
+
+  - keywords: ["search the web", "look up", "find online"]
+    tool: search_web
+    args: {query: "", limit: 5}
+    description: "Search the web"
+    dynamic_args:
+      query: "tool_args.get('query', state['message'].strip())"
+      limit: "tool_args.get('limit', 5)"
+
+  - keywords: ["tables in", "schema", "what tables"]
+    tool: list_db_tables
+    args: {schema: "agent"}
+    description: "List database tables in a schema"
+    dynamic_args:
+      schema: "tool_args.get('schema', 'agent')"
+
+  - keywords: ["show me the users", "who is using", "list users", "show users", "all users"]
+    tool: query_db
+    args:
+      sql: "SELECT DISTINCT user_sub, tier FROM agent.token_usage ORDER BY tier"
+      limit: 50
+    description: "List users from token usage"
+    dynamic_args:
+      limit: "tool_args.get('limit', 50)"
+
+  - keywords: ["chat sessions", "show sessions", "list sessions", "active sessions"]
+    tool: query_db
+    args:
+      sql: "SELECT user_sub, session_id, title, message_count, updated_at FROM agent.chat_sessions ORDER BY updated_at DESC"
+      limit: 50
+    description: "List chat sessions"
+    dynamic_args:
+      limit: "tool_args.get('limit', 50)"

@@ -30,6 +30,17 @@ from app.graphs.analyst import build_analyst_graph
 from app.graphs.admin_ops import build_admin_ops_graph
 from app.capability import CapabilityConfig
 from app.normalizer import normalize, NormalizedRequest, ConversationState
+from app.normalizer import (
+    FORM_GENERATION_RE,
+    HEBREW_FORM_GENERATION_RE,
+    ANALYZE_RE,
+    HEBREW_ANALYZE_RE,
+    STATISTICS_KEYWORDS,
+    HEBREW_STATISTICS_KEYWORDS,
+    ADMIN_SAVE_RE,
+    HEBREW_ADMIN_SAVE_RE,
+    HEBREW_RE,
+)
 from app.tool_resolver import resolve, ToolResolution
 from app.renderer import (
     render_greeting,
@@ -41,6 +52,7 @@ from app.renderer import (
     render_structured_result,
     render_tool_error,
     render_free_generic,
+    render_multi_request,
 )
 from app.tool_executor import execute_tool
 from app.free_tier_llm import is_free_llm_enabled
@@ -110,6 +122,67 @@ def _derive(state: SupervisorState) -> tuple[NormalizedRequest, ToolResolution]:
     return req, res
 
 
+def _detect_multiple_requests(message: str) -> list[str]:
+    """Detect if a message contains multiple distinct operations.
+
+    Splits on conjunctions (EN and HE) and checks each segment for
+    operation keywords. Returns a list of detected operation descriptions
+    (empty if 0 or 1 operations found).
+
+    Exemption: if the message contains "generate" and "save" (or Hebrew
+    equivalents), it's treated as a single workflow (generate-then-save)
+    and NOT split.
+    """
+    if not message or not message.strip():
+        return []
+
+    # Exemption: generate + save = single workflow.
+    has_generate = bool(FORM_GENERATION_RE.search(message) or HEBREW_FORM_GENERATION_RE.search(message))
+    has_save = bool(ADMIN_SAVE_RE.search(message) or HEBREW_ADMIN_SAVE_RE.search(message))
+    if has_generate and has_save:
+        return []
+
+    # Conjunctions to split on (EN + HE).
+    conjunctions = [
+        " and then ", " and also ", " also ", " plus ", "; ", " and ",
+        " וגם ", " ואז ", " ובנוסף ",
+    ]
+
+    # Split the message on conjunctions.
+    segments = [message]
+    for conj in conjunctions:
+        new_segments = []
+        for seg in segments:
+            parts = seg.split(conj)
+            new_segments.extend(parts)
+        segments = new_segments
+    segments = [s.strip() for s in segments if s.strip()]
+
+    if len(segments) <= 1:
+        return []
+
+    # Check each segment for operation keywords.
+    operation_regexes = [
+        FORM_GENERATION_RE,
+        HEBREW_FORM_GENERATION_RE,
+        ANALYZE_RE,
+        HEBREW_ANALYZE_RE,
+        STATISTICS_KEYWORDS,
+        HEBREW_STATISTICS_KEYWORDS,
+        ADMIN_SAVE_RE,
+        HEBREW_ADMIN_SAVE_RE,
+    ]
+
+    detected = []
+    for seg in segments:
+        for regex in operation_regexes:
+            if regex.search(seg):
+                detected.append(seg)
+                break  # one match per segment is enough
+
+    return detected if len(detected) > 1 else []
+
+
 def route(state: SupervisorState) -> str:
     """Normalize, resolve, authorize, and route.
 
@@ -125,6 +198,14 @@ def route(state: SupervisorState) -> str:
 
     log.info("[supervisor.route] user=%s session=%s kind=%s op=%s tool=%s ready=%s",
              user_sub, session_id, req.request_kind, req.operation, res.tool, res.execution_ready)
+
+    # Multi-request detection: if the message contains multiple distinct
+    # operations, ask the user to pick one (before any other routing).
+    multi = _detect_multiple_requests(state.get("message", ""))
+    if len(multi) > 1:
+        log.info("[supervisor.route] MULTI_REQUEST user=%s session=%s count=%d",
+                 user_sub, session_id, len(multi))
+        return "direct_multi_request"
 
     # Authorization check using CapabilityConfig (reads agent.yaml).
     if res.tool and not _authorize(res.tool, tier):
@@ -243,6 +324,14 @@ def direct_unauthorized(state: SupervisorState) -> dict:
     return {"response": render_unauthorized(res.tool, tier, req.language), **_conv_state_update(req)}
 
 
+def direct_multi_request(state: SupervisorState) -> dict:
+    """Ask the user to pick one request when multiple are detected."""
+    req, _ = _derive(state)
+    lang = req.language
+    requests = _detect_multiple_requests(state.get("message", ""))
+    return {"response": render_multi_request(requests, lang), **_conv_state_update(req)}
+
+
 def direct_tool(state: SupervisorState) -> dict:
     """Execute a read tool directly (zero LLM planner calls)."""
     req, res = _derive(state)
@@ -296,6 +385,7 @@ def build_supervisor_graph(checkpointer=None):
     g.add_node("direct_generic", direct_generic)
     g.add_node("direct_clarify", direct_clarify)
     g.add_node("direct_unauthorized", direct_unauthorized)
+    g.add_node("direct_multi_request", direct_multi_request)
     g.add_node("direct_tool", direct_tool)
     g.add_node("nl_assistant", nl_graph)
     g.add_node("analyst", analyst_graph)
@@ -307,14 +397,15 @@ def build_supervisor_graph(checkpointer=None):
         "direct_generic": "direct_generic",
         "direct_clarify": "direct_clarify",
         "direct_unauthorized": "direct_unauthorized",
+        "direct_multi_request": "direct_multi_request",
         "direct_tool": "direct_tool",
         "nl_assistant": "nl_assistant",
         "analyst": "analyst",
         "admin_ops": "admin_ops",
     })
     for node in ("direct_trivial", "direct_out_of_scope", "direct_generic",
-                 "direct_clarify", "direct_unauthorized", "direct_tool",
-                 "nl_assistant", "analyst", "admin_ops"):
+                 "direct_clarify", "direct_unauthorized", "direct_multi_request",
+                 "direct_tool", "nl_assistant", "analyst", "admin_ops"):
         g.add_edge(node, END)
 
     return g.compile(checkpointer=checkpointer)

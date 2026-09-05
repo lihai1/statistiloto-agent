@@ -20,6 +20,8 @@ _DOMAIN_DEFINITIONS = {
         "group_size": "Group size (1-6) is the number of numbers analyzed together: 1 singles, 2 pairs, 3 triples, 4 quads, 5 quints, 6 full six-number groups.",
         "strong_number": "The strong number is always separate from the six-number group and is never part of it.",
         "probability": "Each draw is independent and random. Historical frequency does not increase the probability of a number being drawn next.",
+        "lucky_numbers": "Lucky numbers are your chosen numbers that will appear in every generated form. They are pinned, not statistically selected.",
+        "saved_numbers": "Saved numbers are sets you previously bookmarked in your wallet. You can reuse them as lucky numbers or for analysis.",
     },
     "he": {
         "hot": "מספרים או קבוצות חמים הופיעו בתדירות גבוהה יותר בהגרלות עבר בטווח הנבחר.",
@@ -33,6 +35,8 @@ _DOMAIN_DEFINITIONS = {
         "group_size": "גודל קבוצה (1-6) הוא מספר המספרים שנבדקים יחד: 1 מספרים בודדים, 2 זוגות, 3 שלשות, 4 רביעיות, 5 חמישיות, 6 שישיות מלאות.",
         "strong_number": "המספר החזק תמיד נפרד מקבוצת השישה ולעולם לא חלק ממנה.",
         "probability": "כל הגרלה היא עצמאית ואקראית. תדירות היסטורית אינה מגדילה את הסיכוי שמספר יוגרל בהגרלה הבאה.",
+        "lucky_numbers": "מספרי מזל הם מספרים שבחרת שיופיעו בכל טופס שייווצר. הם קבועים, לא נבחרים סטטיסטית.",
+        "saved_numbers": "מספרים שמורים הם סטים ששמרת בעבר בארנק שלך. תוכל לעשות בהם שימוש חוזר כמספרי מזל או לניתוח.",
     },
 }
 
@@ -97,6 +101,12 @@ def detect_topic(message: str) -> str | None:
     # Probability
     if re.search(r"\b(probability|odds|chance)\b", msg) or any(w in msg for w in ["הסתברות", "סיכוי", "סיכויים"]):
         return "probability"
+    # Lucky numbers
+    if re.search(r"\b(lucky numbers?|pinned numbers?)\b", msg) or "מספרי מזל" in msg:
+        return "lucky_numbers"
+    # Saved numbers
+    if re.search(r"\b(saved numbers?|bookmarked numbers?)\b", msg) or "מספרים שמורים" in msg:
+        return "saved_numbers"
     return None
 
 

@@ -93,6 +93,26 @@ def render_tool_error(language: str = "en") -> str:
     return "I couldn't retrieve the result right now. Please try again later."
 
 
+def render_multi_request(requests: list[str], language: str = "en") -> str:
+    """Render a message asking the user to pick one request at a time.
+
+    Used by the supervisor's ``direct_multi_request`` node when the user
+    message contains multiple distinct operations (e.g. "generate 5 forms
+    and analyze 1,2,3").
+    """
+    if language == "he":
+        header = "אני יכול לטפל בבקשה אחת בכל פעם. אנא בחר אחת:"
+        lines = [header]
+        for i, req in enumerate(requests, 1):
+            lines.append(f"{i}. {req}")
+        return "\n".join(lines)
+    header = "I can handle one request at a time. Please pick one:"
+    lines = [header]
+    for i, req in enumerate(requests, 1):
+        lines.append(f"{i}. {req}")
+    return "\n".join(lines)
+
+
 def render_statistics_result(groups: list, how_many: int, group_size: int, strength: str, language: str = "en") -> str:
     """Render a get_statistics result as readable text without an LLM."""
     if not groups:
