@@ -71,6 +71,14 @@ HEBREW_ANALYZE_RE = re.compile(
     r"(נ.?תח|ניתוח|מה בולט|בדוק|האלה|האלו|כיסוי היסטורי|הכיסוי ההיסטורי|חוזקות|חולשות)",
     re.IGNORECASE,
 )
+SIMULATE_RE = re.compile(
+    r"\b(simulat(?:e|ed|ing|es)|backtest|test my numbers|how (?:would|did) my numbers (?:have )?(?:do|done|perform))\b",
+    re.IGNORECASE,
+)
+HEBREW_SIMULATE_RE = re.compile(
+    r"(דמה|סימולציה|סימלציה|בחן|בדיקת נתונים|איך המספרים שלי היו|איך היו המספרים שלי)",
+    re.IGNORECASE,
+)
 
 # ── Admin operation keyword regexes ──────────────────────────
 ADMIN_SAVE_RE = re.compile(
@@ -200,7 +208,7 @@ class ConversationState:
             compat["request_kind"] = last.request_kind
             compat["operation"] = last.operation
             # Inherit previously-extracted params that are still missing.
-            for field in ["group_size", "strength", "numbers", "how_many", "archive_window", "file_path", "category"]:
+            for field in ["group_size", "strength", "numbers", "how_many", "archive_window", "simulate_window", "file_path", "category"]:
                 current_val = getattr(current, field)
                 last_val = getattr(last, field)
                 if current_val is None and last_val is not None:
@@ -211,7 +219,7 @@ class ConversationState:
         if current.request_kind != last.request_kind:
             return {}
         compat = {}
-        for field in ["group_size", "strength", "numbers", "how_many", "archive_window", "file_path"]:
+        for field in ["group_size", "strength", "numbers", "how_many", "archive_window", "simulate_window", "file_path"]:
             current_val = getattr(current, field)
             last_val = getattr(last, field)
             if current_val is None and last_val is not None:
@@ -231,6 +239,7 @@ class NormalizedRequest:
     numbers: Optional[list[int]] = None     # for analyze / save_numbers
     how_many: Optional[int] = None          # for get_statistics / generate_form
     archive_window: Optional[dict] = None   # {window_from, window_to}
+    simulate_window: Optional[dict] = None  # {window_from, window_to} for simulate
     file_path: Optional[str] = None         # for read_code / edit_file / list_files
     sql: Optional[str] = None               # for query_db
     content: Optional[str] = None           # for edit_file content
@@ -256,6 +265,7 @@ REQUEST_KINDS = {
     "statistics",
     "number_analysis",
     "form_generation",
+    "simulation",
     "admin_operation",
     "out_of_scope",
     "ambiguous",
@@ -359,21 +369,25 @@ def _classify_request_kind(message: str, lang: str) -> tuple[str, Optional[str]]
     if FORM_GENERATION_RE.search(message) or HEBREW_FORM_GENERATION_RE.search(message):
         return "form_generation", None
 
-    # 5. Number analysis
+    # 5. Simulation / backtest
+    if SIMULATE_RE.search(message) or HEBREW_SIMULATE_RE.search(message):
+        return "simulation", None
+
+    # 6. Number analysis
     if ANALYZE_RE.search(message) or HEBREW_ANALYZE_RE.search(message):
         return "number_analysis", None
 
-    # 6. Statistics
+    # 7. Statistics
     if STATISTICS_KEYWORDS.search(message) or HEBREW_STATISTICS_KEYWORDS.search(message):
         return "statistics", None
 
-    # 7. Domain explanation (what is X)
+    # 8. Domain explanation (what is X)
     # Note: מהם removed — it ambiguously matches "איזה מהם" (which of them),
     # causing analyze-style prompts to be misclassified as domain_explanation.
     if re.search(r"\b(what is|what are|explain|how does|what does|מה זה|מה זאת|מהי)\b", message, re.IGNORECASE):
         return "domain_explanation", None
 
-    # 8. Ambiguous
+    # 9. Ambiguous
     if "?" in message or len(message.split()) < 4:
         return "ambiguous", None
 
@@ -389,6 +403,7 @@ def _resolve_operation(request_kind: str) -> Optional[str]:
         "statistics": "group_frequency",
         "number_analysis": "analyze_numbers",
         "form_generation": "generate_form",
+        "simulation": "simulate_numbers",
         "admin_operation": None,  # determined by further admin keyword matching
     }
     return mapping.get(request_kind)
@@ -448,7 +463,7 @@ def _compute_confidence(request_kind: str, message: str, has_required: bool) -> 
         return 1.0
     if request_kind == "out_of_scope" and len(message.strip()) > 0:
         return 1.0
-    if request_kind in ("statistics", "number_analysis", "form_generation", "admin_operation"):
+    if request_kind in ("statistics", "number_analysis", "form_generation", "simulation", "admin_operation"):
         # Confidence is high if we identified the operation intent clearly.
         # Missing required parameters does NOT lower confidence.
         return 0.9 if has_required else 0.85
@@ -485,6 +500,11 @@ def _predefined_clarification(request_kind: str, operation: Optional[str], langu
         if language == "he":
             return "אילו מספרים תרצה לנתח?"
         return "Which numbers would you like to analyze?"
+
+    if request_kind == "simulation" and operation == "simulate_numbers":
+        if language == "he":
+            return "אילו מספרים תרצה לבחון? (6, 8, 10, או 12 מספרים)"
+        return "Which numbers would you like to backtest? (6, 8, 10, or 12 numbers)"
 
     return None
 
@@ -544,6 +564,12 @@ def _extract_clarification_value(
 
     # save_numbers: "numbers" was asked → extract numbers
     if op == "save_numbers":
+        nums = _extract_numbers(msg)
+        if nums:
+            return {"numbers": nums}
+
+    # simulate_numbers: "form" (numbers) was asked → extract numbers
+    if op == "simulate_numbers":
         nums = _extract_numbers(msg)
         if nums:
             return {"numbers": nums}
@@ -677,6 +703,18 @@ def normalize(
     if archive_window:
         provenance["archive_window"] = "context"
 
+    # Simulate window (optional sub-range for backtest). Extracted from context
+    # keys simulate_from/simulate_to when available.
+    simulate_window = None
+    if context:
+        sim_w = {}
+        for k, v in context.items():
+            if k in ("simulate_from", "simulate_to"):
+                sim_w["window_from" if k == "simulate_from" else "window_to"] = v
+        if sim_w:
+            simulate_window = sim_w
+            provenance["simulate_window"] = "context"
+
     file_path = _extract_file_path(message)
     if file_path:
         provenance["file_path"] = "message"
@@ -716,6 +754,8 @@ def normalize(
             missing_hint = None
         elif operation == "save_numbers" and numbers:
             missing_hint = None
+        elif operation == "simulate_numbers" and numbers:
+            missing_hint = None
 
     request = NormalizedRequest(
         language=language,
@@ -726,6 +766,7 @@ def normalize(
         numbers=numbers if numbers else None,
         how_many=how_many,
         archive_window=archive_window,
+        simulate_window=simulate_window,
         file_path=file_path,
         category=category,
         confidence=confidence,

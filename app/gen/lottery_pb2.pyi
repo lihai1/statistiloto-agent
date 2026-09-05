@@ -128,3 +128,89 @@ class HealthCheckResponse(_message.Message):
     version: str
     draws_loaded: int
     def __init__(self, status: _Optional[str] = ..., version: _Optional[str] = ..., draws_loaded: _Optional[int] = ...) -> None: ...
+
+class SimulateRequest(_message.Message):
+    __slots__ = ("form", "strong", "archive_window", "ticket_cost", "prize_amounts", "simulate_window")
+    FORM_FIELD_NUMBER: _ClassVar[int]
+    STRONG_FIELD_NUMBER: _ClassVar[int]
+    ARCHIVE_WINDOW_FIELD_NUMBER: _ClassVar[int]
+    TICKET_COST_FIELD_NUMBER: _ClassVar[int]
+    PRIZE_AMOUNTS_FIELD_NUMBER: _ClassVar[int]
+    SIMULATE_WINDOW_FIELD_NUMBER: _ClassVar[int]
+    form: _containers.RepeatedScalarFieldContainer[int]
+    strong: int
+    archive_window: DateWindow
+    ticket_cost: float
+    prize_amounts: _containers.RepeatedScalarFieldContainer[float]
+    simulate_window: DateWindow
+    def __init__(self, form: _Optional[_Iterable[int]] = ..., strong: _Optional[int] = ..., archive_window: _Optional[_Union[DateWindow, _Mapping]] = ..., ticket_cost: _Optional[float] = ..., prize_amounts: _Optional[_Iterable[float]] = ..., simulate_window: _Optional[_Union[DateWindow, _Mapping]] = ...) -> None: ...
+
+class SimulateTierHit(_message.Message):
+    __slots__ = ("tier", "hits", "amount_per_hit", "total")
+    TIER_FIELD_NUMBER: _ClassVar[int]
+    HITS_FIELD_NUMBER: _ClassVar[int]
+    AMOUNT_PER_HIT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    tier: int
+    hits: int
+    amount_per_hit: float
+    total: float
+    def __init__(self, tier: _Optional[int] = ..., hits: _Optional[int] = ..., amount_per_hit: _Optional[float] = ..., total: _Optional[float] = ...) -> None: ...
+
+class SimulateDrawResult(_message.Message):
+    __slots__ = ("draw_number", "draw_date", "winning_numbers", "winning_strong", "tier_hits", "prize_won", "ticket_cost", "used_real_prizes")
+    DRAW_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    DRAW_DATE_FIELD_NUMBER: _ClassVar[int]
+    WINNING_NUMBERS_FIELD_NUMBER: _ClassVar[int]
+    WINNING_STRONG_FIELD_NUMBER: _ClassVar[int]
+    TIER_HITS_FIELD_NUMBER: _ClassVar[int]
+    PRIZE_WON_FIELD_NUMBER: _ClassVar[int]
+    TICKET_COST_FIELD_NUMBER: _ClassVar[int]
+    USED_REAL_PRIZES_FIELD_NUMBER: _ClassVar[int]
+    draw_number: int
+    draw_date: _timestamp_pb2.Timestamp
+    winning_numbers: _containers.RepeatedScalarFieldContainer[int]
+    winning_strong: int
+    tier_hits: _containers.RepeatedCompositeFieldContainer[SimulateTierHit]
+    prize_won: float
+    ticket_cost: float
+    used_real_prizes: bool
+    def __init__(self, draw_number: _Optional[int] = ..., draw_date: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., winning_numbers: _Optional[_Iterable[int]] = ..., winning_strong: _Optional[int] = ..., tier_hits: _Optional[_Iterable[_Union[SimulateTierHit, _Mapping]]] = ..., prize_won: _Optional[float] = ..., ticket_cost: _Optional[float] = ..., used_real_prizes: _Optional[bool] = ...) -> None: ...
+
+class SimulateTierSummary(_message.Message):
+    __slots__ = ("tier", "label", "total_hits", "total_amount")
+    TIER_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_HITS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_AMOUNT_FIELD_NUMBER: _ClassVar[int]
+    tier: int
+    label: str
+    total_hits: int
+    total_amount: float
+    def __init__(self, tier: _Optional[int] = ..., label: _Optional[str] = ..., total_hits: _Optional[int] = ..., total_amount: _Optional[float] = ...) -> None: ...
+
+class SimulateSummary(_message.Message):
+    __slots__ = ("total_draws", "total_combinations", "total_spent", "total_won", "net", "tier_summaries", "draws_with_real_prizes")
+    TOTAL_DRAWS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_COMBINATIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_SPENT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_WON_FIELD_NUMBER: _ClassVar[int]
+    NET_FIELD_NUMBER: _ClassVar[int]
+    TIER_SUMMARIES_FIELD_NUMBER: _ClassVar[int]
+    DRAWS_WITH_REAL_PRIZES_FIELD_NUMBER: _ClassVar[int]
+    total_draws: int
+    total_combinations: int
+    total_spent: float
+    total_won: float
+    net: float
+    tier_summaries: _containers.RepeatedCompositeFieldContainer[SimulateTierSummary]
+    draws_with_real_prizes: int
+    def __init__(self, total_draws: _Optional[int] = ..., total_combinations: _Optional[int] = ..., total_spent: _Optional[float] = ..., total_won: _Optional[float] = ..., net: _Optional[float] = ..., tier_summaries: _Optional[_Iterable[_Union[SimulateTierSummary, _Mapping]]] = ..., draws_with_real_prizes: _Optional[int] = ...) -> None: ...
+
+class SimulateResponse(_message.Message):
+    __slots__ = ("draws", "summary")
+    DRAWS_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    draws: _containers.RepeatedCompositeFieldContainer[SimulateDrawResult]
+    summary: SimulateSummary
+    def __init__(self, draws: _Optional[_Iterable[_Union[SimulateDrawResult, _Mapping]]] = ..., summary: _Optional[_Union[SimulateSummary, _Mapping]] = ...) -> None: ...

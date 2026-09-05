@@ -122,6 +122,29 @@ class TestNormalize:
         assert req.request_kind == "number_analysis"
         assert req.operation == "analyze_numbers"
 
+    def test_simulate_en(self):
+        req = normalize("Simulate 1, 2, 3, 4, 5, 6 with strong 7")
+        assert req.request_kind == "simulation"
+        assert req.operation == "simulate_numbers"
+        # Numbers include all 1-2 digit numbers from the message (strong is separate at tool level)
+        assert [1, 2, 3, 4, 5, 6] == req.numbers[:6]
+
+    def test_simulate_backtest_en(self):
+        req = normalize("Backtest my numbers 5, 10, 15, 20, 25, 30")
+        assert req.request_kind == "simulation"
+        assert req.operation == "simulate_numbers"
+
+    def test_simulate_he(self):
+        req = normalize("דמה את המספרים 1, 2, 3, 4, 5, 6")
+        assert req.request_kind == "simulation"
+        assert req.operation == "simulate_numbers"
+
+    def test_simulate_missing_numbers_clarification(self):
+        req = normalize("Simulate my numbers")
+        assert req.request_kind == "simulation"
+        assert req.operation == "simulate_numbers"
+        assert req.missing_hint is not None
+
     def test_generate_form_en(self):
         req = normalize("Generate 3 forms")
         assert req.request_kind == "form_generation"

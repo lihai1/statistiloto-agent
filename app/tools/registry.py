@@ -22,6 +22,7 @@ READ_TOOLS = frozenset({
     "generate_form",      # Go gRPC → computes forms (no DB write)
     "get_statistics",     # Go gRPC → reads statistics
     "analyze",            # Go gRPC → reads historical matches
+    "simulate",           # Go gRPC → backtests user numbers against historical draws
     "list_saved_numbers", # Java BFF GET → reads saved numbers
     "query_audit_log",    # DB SELECT → reads audit log
     "read_token_usage",   # DB SELECT → reads token stats
@@ -83,6 +84,22 @@ _TOOL_DEFINITIONS: list[dict] = [
             "type": "object",
             "properties": {
                 "form": {"type": "array", "items": {"type": "integer"}, "description": "The user's selected numbers (1-6 regular numbers)."},
+            },
+            "required": ["form"],
+        },
+    },
+    {
+        "name": "simulate",
+        "description": "Backtest user-selected numbers against historical lottery draws. Returns per-draw results and an aggregated summary (net profit/loss, per-tier hits). Use for 'simulate', 'backtest', or 'how would my numbers have done' requests.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "form": {"type": "array", "items": {"type": "integer"}, "description": "The user's selected numbers (6, 8, 10, or 12 for systematic forms)."},
+                "strong": {"type": "integer", "description": "The user's strong number (1-7). 0 = no strong number."},
+                "archive_from": {"type": "string", "description": "ISO date — start of the archive window (historical context). Unset = full archive."},
+                "archive_to": {"type": "string", "description": "ISO date — end of the archive window."},
+                "simulate_from": {"type": "string", "description": "ISO date — start of the simulate window (backtest range). Unset = falls back to archive_window."},
+                "simulate_to": {"type": "string", "description": "ISO date — end of the simulate window."},
             },
             "required": ["form"],
         },

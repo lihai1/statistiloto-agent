@@ -110,6 +110,23 @@ class TestMultiRequestDetection:
         assert _detect_multiple_requests("") == []
         assert _detect_multiple_requests("   ") == []
 
+    def test_hot_and_cold_not_split(self):
+        """Compound adjective phrase 'hot and cold' should NOT be split."""
+        result = _detect_multiple_requests(
+            "explain the methodology behind the hot and cold number analysis"
+        )
+        assert result == []
+
+    def test_hebrew_hot_and_cold_not_split(self):
+        """Hebrew compound 'חמים וקרים' should NOT be split."""
+        result = _detect_multiple_requests("נתח את המספרים החמים והקרים ב-50 הגרלות האחרונות")
+        assert result == []
+
+    def test_simulate_and_analyze_still_split(self):
+        """Genuine two-operation requests are still split (regression)."""
+        result = _detect_multiple_requests("simulate 1,2,3,4,5,6 and analyze 7,8,9")
+        assert len(result) == 2
+
 
 class TestDirectToolErrorPropagation:
     """Tests for error propagation in direct_tool (#7)."""

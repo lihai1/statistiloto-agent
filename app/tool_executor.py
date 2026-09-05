@@ -96,6 +96,17 @@ def _dispatch(tool_name: str, args: dict, claims: TokenClaims) -> Any:
             window_from=args.get("window_from"),
             window_to=args.get("window_to"),
         )
+    if tool_name == "simulate":
+        archive_window = args.get("archive_window") or {}
+        simulate_window = args.get("simulate_window") or {}
+        return lottery_grpc.simulate(
+            form=args.get("form", []),
+            strong=args.get("strong", 0),
+            archive_from=archive_window.get("window_from"),
+            archive_to=archive_window.get("window_to"),
+            simulate_from=simulate_window.get("window_from"),
+            simulate_to=simulate_window.get("window_to"),
+        )
     if tool_name == "list_saved_numbers":
         return saved_numbers.list_saved_numbers(user_sub=claims.sub, jwt_token=claims.raw_token)
     if tool_name == "save_numbers":

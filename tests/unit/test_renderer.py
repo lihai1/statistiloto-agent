@@ -11,7 +11,9 @@ from app.renderer import (
     render_statistics_result,
     render_generate_form_result,
     render_analyze_result,
+    render_simulate_result,
     render_multi_request,
+    render_tool_error,
 )
 
 
@@ -187,3 +189,76 @@ class TestRenderMultiRequest:
         result = render_multi_request(["generate 5 forms"], "en")
         assert "one request at a time" in result.lower()
         assert "generate 5 forms" in result
+
+
+# ── error precedence (#bug-4) ─────────────────────────────────
+
+
+class TestRenderErrorPrecedence:
+    """Tool error results must render as errors, not empty tool-specific output."""
+
+    def test_generate_form_error_not_masked(self):
+        """Error in generate_form result → render_tool_error, not 'No forms'."""
+        result = render_structured_result(
+            "generate_form", {"error": "No module named 'lottery_pb2'", "tool": "generate_form"}, "en",
+        )
+        assert result == render_tool_error("en")
+        assert "No forms" not in result
+
+    def test_analyze_error_not_masked(self):
+        """Error in analyze result → render_tool_error, not 'No frequency data'."""
+        result = render_structured_result(
+            "analyze", {"error": "Service unavailable", "tool": "analyze"}, "en",
+        )
+        assert result == render_tool_error("en")
+        assert "No frequency data" not in result
+
+    def test_get_statistics_error_not_masked(self):
+        """Error in get_statistics result → render_tool_error, not empty stats."""
+        result = render_structured_result(
+            "get_statistics", {"error": "timeout", "tool": "get_statistics"}, "he",
+        )
+        assert result == render_tool_error("he")
+
+
+# ── simulate result ───────────────────────────────────────────
+
+
+class TestRenderSimulateResult:
+    def test_render_simulate_with_summary_en(self):
+        draws = [
+            {"draw_number": 100, "winning_numbers": [1, 2, 3, 4, 5, 6],
+             "winning_strong": 7, "prize_won": 100.0, "tier_hits": [], "ticket_cost": 3.0,
+             "used_real_prizes": True},
+        ]
+        summary = {
+            "total_draws": 100, "total_combinations": 100,
+            "total_spent": 300.0, "total_won": 100.0, "net": -200.0,
+            "tier_summaries": [
+                {"tier": 1, "label": "6+strong", "total_hits": 0, "total_amount": 0},
+                {"tier": 8, "label": "3", "total_hits": 5, "total_amount": 15.0},
+            ],
+            "draws_with_real_prizes": 100,
+        }
+        result = render_simulate_result(draws, summary, "en")
+        assert "100 draws" in result
+        assert "₪300" in result
+        assert "Loss" in result
+        assert "3: 5 hits" in result
+
+    def test_render_simulate_empty_en(self):
+        result = render_simulate_result([], None, "en")
+        assert "No simulation results" in result
+
+    def test_render_simulate_empty_he(self):
+        result = render_simulate_result([], None, "he")
+        assert "לא נמצאו תוצאות סימולציה" in result
+
+    def test_render_simulate_via_structured_result(self):
+        """render_structured_result dispatches to render_simulate_result for 'simulate'."""
+        result = render_structured_result(
+            "simulate",
+            {"draws": [], "summary": None},
+            "en",
+        )
+        assert "No simulation results" in result

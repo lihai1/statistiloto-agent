@@ -34,6 +34,7 @@ tiers:
       - generate_form
       - get_statistics
       - analyze
+      - simulate               # backtest user numbers (read-only)
       - save_numbers            # write tool → HITL triggers automatically
       - list_saved_numbers
     rag_corpora:
@@ -46,6 +47,7 @@ tiers:
       - generate_form
       - get_statistics
       - analyze
+      - simulate               # backtest user numbers (read-only)
       - save_numbers            # write tool → HITL triggers automatically
       - list_saved_numbers
       - trigger_scraper         # write tool → HITL triggers automatically

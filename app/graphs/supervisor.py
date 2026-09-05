@@ -20,6 +20,7 @@ separate normalize node, which would break interrupt propagation in subgraphs.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Literal, Optional
 
 from langgraph.graph import StateGraph, START, END
@@ -35,6 +36,8 @@ from app.normalizer import (
     HEBREW_FORM_GENERATION_RE,
     ANALYZE_RE,
     HEBREW_ANALYZE_RE,
+    SIMULATE_RE,
+    HEBREW_SIMULATE_RE,
     STATISTICS_KEYWORDS,
     HEBREW_STATISTICS_KEYWORDS,
     ADMIN_SAVE_RE,
@@ -56,8 +59,26 @@ from app.renderer import (
 )
 from app.tool_executor import execute_tool
 from app.free_tier_llm import is_free_llm_enabled
+from app.graphs.common import append_history
 
 log = logging.getLogger(__name__)
+
+# Operation verbs that indicate a distinct tool request in each segment.
+# Used by _detect_multiple_requests to avoid splitting compound adjective
+# phrases like "hot and cold numbers" into false multi-requests.
+# Only tool-triggering verbs count — explanatory verbs (explain, what, how)
+# and noun forms (analysis, statistics) are excluded.
+_OPERATION_VERB_RE = re.compile(
+    r"\b(generate|create|make|analyz(?:e|ed|ing|es)|analyse|"
+    r"show|give|get|save|keep|store|"
+    r"simulate|backtest|trigger)\b",
+    re.IGNORECASE,
+)
+_HEBREW_OPERATION_VERB_RE = re.compile(
+    r"(צור|צרי|תיצור|תייצר|נתח|נתחי|תנתח|הצג|הציגו|תן|תנו|"
+    r"שמור|שמרי|תשמור|דמה|דמי|תדמה|בחן|בחני|תבחן|הפעל)",
+    re.IGNORECASE,
+)
 
 
 class SupervisorState(TypedDict):
@@ -167,6 +188,8 @@ def _detect_multiple_requests(message: str) -> list[str]:
         HEBREW_FORM_GENERATION_RE,
         ANALYZE_RE,
         HEBREW_ANALYZE_RE,
+        SIMULATE_RE,
+        HEBREW_SIMULATE_RE,
         STATISTICS_KEYWORDS,
         HEBREW_STATISTICS_KEYWORDS,
         ADMIN_SAVE_RE,
@@ -175,6 +198,13 @@ def _detect_multiple_requests(message: str) -> list[str]:
 
     detected = []
     for seg in segments:
+        # Require an operation verb in the segment — this prevents compound
+        # adjective phrases like "hot and cold numbers" from being split into
+        # false multi-requests (both halves match STATISTICS_KEYWORDS but
+        # neither contains a distinct operation verb).
+        has_verb = bool(_OPERATION_VERB_RE.search(seg) or _HEBREW_OPERATION_VERB_RE.search(seg))
+        if not has_verb:
+            continue
         for regex in operation_regexes:
             if regex.search(seg):
                 detected.append(seg)
@@ -295,12 +325,13 @@ def direct_trivial(state: SupervisorState) -> dict:
         resp = render_capabilities(tier, lang)
     else:
         resp = render_greeting(lang)
-    return {"response": resp, **_conv_state_update(req)}
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_out_of_scope(state: SupervisorState) -> dict:
     req, _ = _derive(state)
-    return {"response": render_out_of_scope(req.language), **_conv_state_update(req)}
+    resp = render_out_of_scope(req.language)
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_generic(state: SupervisorState) -> dict:
@@ -310,18 +341,21 @@ def direct_generic(state: SupervisorState) -> dict:
     or a domain explanation. Zero LLM calls.
     """
     req, _ = _derive(state)
-    return {"response": render_free_generic(req.language), **_conv_state_update(req)}
+    resp = render_free_generic(req.language)
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_clarify(state: SupervisorState) -> dict:
     req, res = _derive(state)
-    return {"response": render_missing(res.missing_hint, req.language), **_conv_state_update(req)}
+    resp = render_missing(res.missing_hint, req.language)
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_unauthorized(state: SupervisorState) -> dict:
     req, res = _derive(state)
     tier = state.get("tier", "free")
-    return {"response": render_unauthorized(res.tool, tier, req.language), **_conv_state_update(req)}
+    resp = render_unauthorized(res.tool, tier, req.language)
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_multi_request(state: SupervisorState) -> dict:
@@ -329,7 +363,8 @@ def direct_multi_request(state: SupervisorState) -> dict:
     req, _ = _derive(state)
     lang = req.language
     requests = _detect_multiple_requests(state.get("message", ""))
-    return {"response": render_multi_request(requests, lang), **_conv_state_update(req)}
+    resp = render_multi_request(requests, lang)
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_tool(state: SupervisorState) -> dict:
@@ -339,17 +374,21 @@ def direct_tool(state: SupervisorState) -> dict:
     lang = req.language
 
     if not res or not res.tool or not res.args:
-        return {"response": render_missing(None, lang), **_conv_state_update(req)}
+        resp = render_missing(None, lang)
+        return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
     try:
         result = execute_tool(res.tool, res.args, jwt_token)
-        return {"tool_result": result, "response": render_structured_result(res.tool, result, lang), **_conv_state_update(req)}
+        resp = render_structured_result(res.tool, result, lang)
+        return {"tool_result": result, "response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
     except PermissionError as e:
         log.warning("[supervisor.direct_tool] DENIED user=%s tool=%s: %s", state.get("user_sub"), res.tool, e)
-        return {"response": render_unauthorized(res.tool, state.get("tier", "free"), lang), **_conv_state_update(req)}
+        resp = render_unauthorized(res.tool, state.get("tier", "free"), lang)
+        return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
     except Exception as e:
         log.error("[supervisor.direct_tool] ERROR user=%s tool=%s: %s", state.get("user_sub"), res.tool, e)
-        return {"response": render_tool_error(lang), **_conv_state_update(req)}
+        resp = render_tool_error(lang)
+        return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def classify_intent(state: SupervisorState) -> str:

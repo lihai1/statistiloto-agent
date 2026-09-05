@@ -5,15 +5,21 @@ install:
 	uv venv && uv pip install -e ".[dev]"
 
 # ── Generate Python gRPC stubs from shared proto ─────────────
+# The proto is temporarily copied into app/gen/ so its path relative
+# to -I. mirrors the Python package structure (app/gen/lottery.proto).
+# This makes protoc generate correct package-relative imports:
+#   from app.gen import lottery_pb2  (not bare `import lottery_pb2`)
 proto:
 	@mkdir -p app/gen
-	python -m grpc_tools.protoc \
-		-I../proto \
+	cp ../proto/lottery.proto app/gen/lottery.proto
+	python3 -m grpc_tools.protoc \
+		-I. \
 		-I../proto/third_party \
-		--python_out=app/gen \
-		--grpc_python_out=app/gen \
-		--pyi_out=app/gen \
-		../proto/lottery.proto
+		--python_out=. \
+		--grpc_python_out=. \
+		--pyi_out=. \
+		app/gen/lottery.proto
+	rm app/gen/lottery.proto
 	@touch app/gen/__init__.py
 	@echo "Generated gRPC stubs in app/gen/"
 

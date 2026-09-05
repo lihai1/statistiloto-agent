@@ -108,6 +108,85 @@ class TestChatStream:
         body = resp.text
         assert "event: done" in body
 
+    # ── Deterministic tool execution tests (bug-1 regression) ──────
+
+    def test_stream_generate_form_deterministic(self, client, paid_headers):
+        """Generate form via deterministic route → SSE done with form content."""
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-gen", "message": "Generate 3 forms"},
+            headers=paid_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "event: done" in body
+        # Mock returns forms with numbers [1,2,3,4,5,6] strong 7
+        assert "1" in body and "2" in body
+
+    def test_stream_get_statistics_deterministic(self, client, paid_headers):
+        """Get statistics via deterministic route → SSE done with statistics."""
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-stats", "message": "Show me hot pairs"},
+            headers=paid_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "event: done" in body
+        # Mock returns groups with count 10
+        assert "10" in body
+
+    def test_stream_analyze_deterministic(self, client, paid_headers):
+        """Analyze via deterministic route → SSE done with frequency data."""
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-analyze", "message": "Analyze 1,2,3,4,5,6"},
+            headers=paid_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "event: done" in body
+
+    def test_stream_simulate_deterministic(self, client, paid_headers):
+        """Simulate via deterministic route → SSE done with backtest summary."""
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-sim", "message": "Simulate 1,2,3,4,5,6 with strong 7"},
+            headers=paid_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "event: done" in body
+        # Mock returns summary with net -200
+        assert "200" in body or "draws" in body.lower()
+
+    def test_stream_vague_generate_clarifies(self, client, paid_headers):
+        """Bare 'generate' → clarification asking how many forms."""
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-vague", "message": "generate"},
+            headers=paid_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "event: done" in body
+        # Should ask for clarification (how many forms)
+        assert "how many" in body.lower() or "כמה" in body
+
+    def test_stream_compound_not_multi_request(self, client, paid_headers):
+        """'explain hot and cold' should NOT trigger multi-request pick-one."""
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": "stream-compound",
+                  "message": "explain the methodology behind hot and cold numbers"},
+            headers=paid_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "event: done" in body
+        # Should NOT contain the multi-request pick-one message
+        assert "one request at a time" not in body.lower()
+
 
 class TestChatStreamRedis:
     """Tests for the Redis pub/sub streaming path."""

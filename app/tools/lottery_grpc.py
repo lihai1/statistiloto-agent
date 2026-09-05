@@ -352,6 +352,113 @@ def analyze(form: list[int], window_from: str | None = None,
     return _cached("analyze", cache_kwargs, _fetch)
 
 
+def simulate(form: list[int], strong: int = 0,
+             archive_from: str | None = None, archive_to: str | None = None,
+             simulate_from: str | None = None, simulate_to: str | None = None,
+             ticket_cost: float = 3.0, prize_amounts: list[float] | None = None) -> dict:
+    """Tool: backtest user-selected numbers against historical draws.
+
+    Supports systematic forms (6, 8, 10, 12 numbers) where all C(N,6)
+    combinations are played per draw.
+
+    Args:
+        form: the user's selected numbers (6, 8, 10, or 12 for systematic forms).
+        strong: the user's strong number (1-7). 0 = no strong number.
+        archive_from / archive_to: optional ISO date bounds for the archive window
+            (the historical-draw range loaded as context). Unset = full archive.
+        simulate_from / simulate_to: optional ISO date bounds for the simulate
+            window (the sub-range of draws to backtest against). Unset = falls
+            back to archive_window (legacy single-window behavior).
+        ticket_cost: ticket cost per table/combination in ILS (default 3.0).
+        prize_amounts: optional user-configurable prize amounts per tier (ILS).
+            Index 0 = tier 1 (6+strong), ..., 7 = tier 8 (3). Must be length 0 or 8.
+
+    Returns:
+        {"draws": [...], "summary": {total_draws, total_spent, total_won, net, ...}}
+    """
+    cache_kwargs = {
+        "form": form, "strong": strong,
+        "archive_from": archive_from, "archive_to": archive_to,
+        "simulate_from": simulate_from, "simulate_to": simulate_to,
+        "ticket_cost": ticket_cost, "prize_amounts": prize_amounts,
+    }
+
+    def _fetch() -> dict:
+        if _mock_client is not None:
+            fn = _mock_client.get("simulate")
+            if fn:
+                return fn(form=form, strong=strong,
+                          archive_from=archive_from, archive_to=archive_to,
+                          simulate_from=simulate_from, simulate_to=simulate_to,
+                          ticket_cost=ticket_cost, prize_amounts=prize_amounts)
+            raise ToolError("Mock simulate not configured")
+
+        stub = _get_stub()
+        if stub is None:
+            raise ToolError("Lottery service unavailable")
+
+        from app.gen import lottery_pb2
+        req = lottery_pb2.SimulateRequest(
+            form=form,
+            strong=strong,
+            ticket_cost=ticket_cost,
+        )
+        archive_window = _build_window(archive_from, archive_to)
+        if archive_window is not None:
+            req.archive_window.CopyFrom(archive_window)
+        simulate_window = _build_window(simulate_from, simulate_to)
+        if simulate_window is not None:
+            req.simulate_window.CopyFrom(simulate_window)
+        if prize_amounts:
+            req.prize_amounts.extend(prize_amounts)
+        resp = stub.Simulate(req)
+
+        draws = []
+        for d in resp.draws:
+            tier_hits = []
+            for h in d.tier_hits:
+                tier_hits.append({
+                    "tier": h.tier,
+                    "hits": h.hits,
+                    "amount_per_hit": h.amount_per_hit,
+                    "total": h.total,
+                })
+            draws.append({
+                "draw_number": d.draw_number,
+                "winning_numbers": list(d.winning_numbers),
+                "winning_strong": d.winning_strong,
+                "tier_hits": tier_hits,
+                "prize_won": d.prize_won,
+                "ticket_cost": d.ticket_cost,
+                "used_real_prizes": d.used_real_prizes,
+            })
+
+        summary = None
+        if resp.HasField("summary"):
+            s = resp.summary
+            tier_summaries = []
+            for ts in s.tier_summaries:
+                tier_summaries.append({
+                    "tier": ts.tier,
+                    "label": ts.label,
+                    "total_hits": ts.total_hits,
+                    "total_amount": ts.total_amount,
+                })
+            summary = {
+                "total_draws": s.total_draws,
+                "total_combinations": s.total_combinations,
+                "total_spent": s.total_spent,
+                "total_won": s.total_won,
+                "net": s.net,
+                "tier_summaries": tier_summaries,
+                "draws_with_real_prizes": s.draws_with_real_prizes,
+            }
+
+        return {"draws": draws, "summary": summary}
+
+    return _cached("simulate", cache_kwargs, _fetch)
+
+
 # ── Mock support for testing ─────────────────────────────────
 
 _mock_client: Optional[dict] = None

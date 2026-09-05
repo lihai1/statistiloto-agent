@@ -214,6 +214,22 @@ OPERATION_SPECS: dict[str, OperationSpec] = {
             },
         },
     ),
+    "simulate_numbers": OperationSpec(
+        name="simulate_numbers",
+        tool="simulate",
+        required=["form"],
+        optional=["strong", "archive_window", "simulate_window"],
+        defaults={},
+        validators={
+            "form": lambda v: _validate_numbers(v, min_count=6),
+        },
+        missing_hint={
+            "form": {
+                "en": "Which numbers would you like to backtest? (6, 8, 10, or 12 numbers)",
+                "he": "אילו מספרים תרצה לבחון? (6, 8, 10, או 12 מספרים)",
+            },
+        },
+    ),
     "edit_file": OperationSpec(
         name="edit_file",
         tool="edit_file",
@@ -396,6 +412,7 @@ def resolve(request: "app.normalizer.NormalizedRequest") -> ToolResolution:
         "numbers": "numbers" if operation == "save_numbers" else "form",
         "how_many": "how_many",
         "archive_window": "archive_window",
+        "simulate_window": "simulate_window",
         "file_path": "file_path",
         "sql": "sql",
         "content": "content",

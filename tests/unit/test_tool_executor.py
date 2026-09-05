@@ -70,3 +70,17 @@ class TestExecuteToolAuthorization:
         token = create_test_jwt(sub="admin-user", tier="admin")
         with pytest.raises(PermissionError):
             execute_tool("nonexistent_tool", {}, token)
+
+    def test_paid_can_execute_simulate(self):
+        from app.tools import lottery_grpc
+        lottery_grpc.set_mock_client({
+            "simulate": lambda **kw: {"draws": [], "summary": {"total_draws": 0}},
+        })
+        token = create_test_jwt(sub="paid-user", tier="paid")
+        result = execute_tool("simulate", {"form": [1, 2, 3, 4, 5, 6]}, token)
+        assert "summary" in result
+
+    def test_free_cannot_execute_simulate(self):
+        token = create_test_jwt(sub="free-user", tier="free")
+        with pytest.raises(PermissionError):
+            execute_tool("simulate", {"form": [1, 2, 3, 4, 5, 6]}, token)

@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import lottery_pb2 as lottery__pb2
+from app.gen import lottery_pb2 as app_dot_gen_dot_lottery__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in lottery_pb2_grpc.py depends on'
+        + ' but the generated code in app/gen/lottery_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -40,23 +40,28 @@ class LotteryServiceStub:
         """
         self.HealthCheck = channel.unary_unary(
                 '/lottery.v1.LotteryService/HealthCheck',
-                request_serializer=lottery__pb2.HealthCheckRequest.SerializeToString,
-                response_deserializer=lottery__pb2.HealthCheckResponse.FromString,
+                request_serializer=app_dot_gen_dot_lottery__pb2.HealthCheckRequest.SerializeToString,
+                response_deserializer=app_dot_gen_dot_lottery__pb2.HealthCheckResponse.FromString,
                 _registered_method=True)
         self.GenerateForm = channel.unary_unary(
                 '/lottery.v1.LotteryService/GenerateForm',
-                request_serializer=lottery__pb2.GenerateFormRequest.SerializeToString,
-                response_deserializer=lottery__pb2.GenerateFormResponse.FromString,
+                request_serializer=app_dot_gen_dot_lottery__pb2.GenerateFormRequest.SerializeToString,
+                response_deserializer=app_dot_gen_dot_lottery__pb2.GenerateFormResponse.FromString,
                 _registered_method=True)
         self.GetStatistics = channel.unary_unary(
                 '/lottery.v1.LotteryService/GetStatistics',
-                request_serializer=lottery__pb2.GetStatisticsRequest.SerializeToString,
-                response_deserializer=lottery__pb2.GetStatisticsResponse.FromString,
+                request_serializer=app_dot_gen_dot_lottery__pb2.GetStatisticsRequest.SerializeToString,
+                response_deserializer=app_dot_gen_dot_lottery__pb2.GetStatisticsResponse.FromString,
                 _registered_method=True)
         self.Analyze = channel.unary_unary(
                 '/lottery.v1.LotteryService/Analyze',
-                request_serializer=lottery__pb2.AnalyzeRequest.SerializeToString,
-                response_deserializer=lottery__pb2.AnalyzeResponse.FromString,
+                request_serializer=app_dot_gen_dot_lottery__pb2.AnalyzeRequest.SerializeToString,
+                response_deserializer=app_dot_gen_dot_lottery__pb2.AnalyzeResponse.FromString,
+                _registered_method=True)
+        self.Simulate = channel.unary_unary(
+                '/lottery.v1.LotteryService/Simulate',
+                request_serializer=app_dot_gen_dot_lottery__pb2.SimulateRequest.SerializeToString,
+                response_deserializer=app_dot_gen_dot_lottery__pb2.SimulateResponse.FromString,
                 _registered_method=True)
 
 
@@ -96,28 +101,43 @@ class LotteryServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Simulate(self, request, context):
+        """Simulate backtests a user's numbers against historical draws over a date
+        window, computing ticket cost spent and prizes won per draw and in total.
+        Supports systematic forms (6, 8, 10, 12 numbers) where all C(N,6)
+        combinations are played per draw.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LotteryServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'HealthCheck': grpc.unary_unary_rpc_method_handler(
                     servicer.HealthCheck,
-                    request_deserializer=lottery__pb2.HealthCheckRequest.FromString,
-                    response_serializer=lottery__pb2.HealthCheckResponse.SerializeToString,
+                    request_deserializer=app_dot_gen_dot_lottery__pb2.HealthCheckRequest.FromString,
+                    response_serializer=app_dot_gen_dot_lottery__pb2.HealthCheckResponse.SerializeToString,
             ),
             'GenerateForm': grpc.unary_unary_rpc_method_handler(
                     servicer.GenerateForm,
-                    request_deserializer=lottery__pb2.GenerateFormRequest.FromString,
-                    response_serializer=lottery__pb2.GenerateFormResponse.SerializeToString,
+                    request_deserializer=app_dot_gen_dot_lottery__pb2.GenerateFormRequest.FromString,
+                    response_serializer=app_dot_gen_dot_lottery__pb2.GenerateFormResponse.SerializeToString,
             ),
             'GetStatistics': grpc.unary_unary_rpc_method_handler(
                     servicer.GetStatistics,
-                    request_deserializer=lottery__pb2.GetStatisticsRequest.FromString,
-                    response_serializer=lottery__pb2.GetStatisticsResponse.SerializeToString,
+                    request_deserializer=app_dot_gen_dot_lottery__pb2.GetStatisticsRequest.FromString,
+                    response_serializer=app_dot_gen_dot_lottery__pb2.GetStatisticsResponse.SerializeToString,
             ),
             'Analyze': grpc.unary_unary_rpc_method_handler(
                     servicer.Analyze,
-                    request_deserializer=lottery__pb2.AnalyzeRequest.FromString,
-                    response_serializer=lottery__pb2.AnalyzeResponse.SerializeToString,
+                    request_deserializer=app_dot_gen_dot_lottery__pb2.AnalyzeRequest.FromString,
+                    response_serializer=app_dot_gen_dot_lottery__pb2.AnalyzeResponse.SerializeToString,
+            ),
+            'Simulate': grpc.unary_unary_rpc_method_handler(
+                    servicer.Simulate,
+                    request_deserializer=app_dot_gen_dot_lottery__pb2.SimulateRequest.FromString,
+                    response_serializer=app_dot_gen_dot_lottery__pb2.SimulateResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -149,8 +169,8 @@ class LotteryService:
             request,
             target,
             '/lottery.v1.LotteryService/HealthCheck',
-            lottery__pb2.HealthCheckRequest.SerializeToString,
-            lottery__pb2.HealthCheckResponse.FromString,
+            app_dot_gen_dot_lottery__pb2.HealthCheckRequest.SerializeToString,
+            app_dot_gen_dot_lottery__pb2.HealthCheckResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -176,8 +196,8 @@ class LotteryService:
             request,
             target,
             '/lottery.v1.LotteryService/GenerateForm',
-            lottery__pb2.GenerateFormRequest.SerializeToString,
-            lottery__pb2.GenerateFormResponse.FromString,
+            app_dot_gen_dot_lottery__pb2.GenerateFormRequest.SerializeToString,
+            app_dot_gen_dot_lottery__pb2.GenerateFormResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -203,8 +223,8 @@ class LotteryService:
             request,
             target,
             '/lottery.v1.LotteryService/GetStatistics',
-            lottery__pb2.GetStatisticsRequest.SerializeToString,
-            lottery__pb2.GetStatisticsResponse.FromString,
+            app_dot_gen_dot_lottery__pb2.GetStatisticsRequest.SerializeToString,
+            app_dot_gen_dot_lottery__pb2.GetStatisticsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -230,8 +250,35 @@ class LotteryService:
             request,
             target,
             '/lottery.v1.LotteryService/Analyze',
-            lottery__pb2.AnalyzeRequest.SerializeToString,
-            lottery__pb2.AnalyzeResponse.FromString,
+            app_dot_gen_dot_lottery__pb2.AnalyzeRequest.SerializeToString,
+            app_dot_gen_dot_lottery__pb2.AnalyzeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Simulate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/lottery.v1.LotteryService/Simulate',
+            app_dot_gen_dot_lottery__pb2.SimulateRequest.SerializeToString,
+            app_dot_gen_dot_lottery__pb2.SimulateResponse.FromString,
             options,
             channel_credentials,
             insecure,

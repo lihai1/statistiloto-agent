@@ -317,6 +317,21 @@ def mock_tool_clients():
             ],
             "archive_size": 100,
         },
+        "simulate": lambda **kw: {
+            "draws": [
+                {"draw_number": 100, "winning_numbers": [1, 2, 3, 4, 5, 6],
+                 "winning_strong": 7, "prize_won": 100.0, "tier_hits": [],
+                 "ticket_cost": 3.0, "used_real_prizes": True},
+            ],
+            "summary": {
+                "total_draws": 100, "total_combinations": 100,
+                "total_spent": 300.0, "total_won": 100.0, "net": -200.0,
+                "tier_summaries": [
+                    {"tier": 8, "label": "3", "total_hits": 5, "total_amount": 15.0},
+                ],
+                "draws_with_real_prizes": 100,
+            },
+        },
     })
     saved_numbers.set_mock_client({
         "list_saved_numbers": lambda **kw: {"numbers": []},

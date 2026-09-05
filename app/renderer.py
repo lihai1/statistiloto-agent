@@ -237,6 +237,12 @@ def render_analyze_result(frequency_groups: list, archive_size: int, language: s
 
 def render_structured_result(tool: str, result: dict, language: str = "en") -> str:
     """Render a tool result for simple cases (zero LLM calls)."""
+    # Check for errors FIRST — a tool result with an "error" key means the
+    # tool execution failed. Without this check, tool-specific renderers
+    # would treat the missing data fields as empty results, masking the
+    # real failure behind messages like "No forms could be generated."
+    if "error" in result:
+        return render_tool_error(language)
     if tool == "get_statistics":
         return render_statistics_result(
             result.get("groups", []),
@@ -257,9 +263,90 @@ def render_structured_result(tool: str, result: dict, language: str = "en") -> s
             result.get("archive_size", 0),
             language,
         )
-    if "error" in result:
-        return render_tool_error(language)
+    if tool == "simulate":
+        return render_simulate_result(
+            result.get("draws", []),
+            result.get("summary"),
+            language,
+        )
     # Generic: avoid raw JSON, return a concise summary.
     if language == "he":
         return "הפעולה הושלמה. התוצאה זמינה במערכת."
     return "The action completed successfully. The result is available in the system."
+
+
+def render_simulate_result(draws: list, summary: dict | None, language: str = "en") -> str:
+    """Render a simulate (backtest) result as readable text without an LLM.
+
+    Shows the aggregated summary (total draws, net profit/loss, per-tier hits)
+    and a few notable draws (those with prize wins).
+    """
+    if not draws and not summary:
+        if language == "he":
+            return "לא נמצאו תוצאות סימולציה עבור המספרים שנבחרו."
+        return "No simulation results found for the selected numbers."
+
+    if language == "he":
+        lines = []
+        if summary:
+            total = summary.get("total_draws", 0)
+            spent = summary.get("total_spent", 0)
+            won = summary.get("total_won", 0)
+            net = summary.get("net", 0)
+            lines.append(f"תוצאות סימולציה ({total} הגרלות):")
+            lines.append(f"  הוצאה: ₪{spent:.0f}")
+            lines.append(f"  זכיות: ₪{won:.0f}")
+            net_label = f"רווח ₪{net:.0f}" if net >= 0 else f"הפסד ₪{abs(net):.0f}"
+            lines.append(f"  סה\"כ: {net_label}")
+            tier_summaries = summary.get("tier_summaries", [])
+            if tier_summaries:
+                lines.append("  פירוט לפי דרגה:")
+                for ts in tier_summaries:
+                    hits = ts.get("total_hits", 0)
+                    if hits > 0:
+                        label = ts.get("label", f"דרגה {ts.get('tier', '?')}")
+                        amount = ts.get("total_amount", 0)
+                        lines.append(f"    {label}: {hits} פעמים — ₪{amount:.0f}")
+        winning_draws = [d for d in draws if d.get("prize_won", 0) > 0]
+        if winning_draws:
+            lines.append(f"\nהגרלות עם זכיות ({len(winning_draws)} מתוך {len(draws)}):")
+            for d in winning_draws[:5]:
+                nums = ", ".join(str(n) for n in d.get("winning_numbers", []))
+                strong = d.get("winning_strong", 0)
+                prize = d.get("prize_won", 0)
+                strong_str = f" + חזק {strong}" if strong else ""
+                lines.append(f"  הגרלה {d.get('draw_number', '?')}: {nums}{strong_str} — ₪{prize:.0f}")
+        lines.append(get_disclaimer(language))
+    else:
+        lines = []
+        if summary:
+            total = summary.get("total_draws", 0)
+            spent = summary.get("total_spent", 0)
+            won = summary.get("total_won", 0)
+            net = summary.get("net", 0)
+            lines.append(f"Simulation results ({total} draws):")
+            lines.append(f"  Total spent: ₪{spent:.0f}")
+            lines.append(f"  Total won: ₪{won:.0f}")
+            net_label = f"Profit ₪{net:.0f}" if net >= 0 else f"Loss ₪{abs(net):.0f}"
+            lines.append(f"  Net: {net_label}")
+            tier_summaries = summary.get("tier_summaries", [])
+            if tier_summaries:
+                lines.append("  Per-tier breakdown:")
+                for ts in tier_summaries:
+                    hits = ts.get("total_hits", 0)
+                    if hits > 0:
+                        label = ts.get("label", f"Tier {ts.get('tier', '?')}")
+                        amount = ts.get("total_amount", 0)
+                        lines.append(f"    {label}: {hits} hits — ₪{amount:.0f}")
+        winning_draws = [d for d in draws if d.get("prize_won", 0) > 0]
+        if winning_draws:
+            lines.append(f"\nWinning draws ({len(winning_draws)} of {len(draws)}):")
+            for d in winning_draws[:5]:
+                nums = ", ".join(str(n) for n in d.get("winning_numbers", []))
+                strong = d.get("winning_strong", 0)
+                prize = d.get("prize_won", 0)
+                strong_str = f" + strong {strong}" if strong else ""
+                lines.append(f"  Draw {d.get('draw_number', '?')}: {nums}{strong_str} — ₪{prize:.0f}")
+        lines.append(get_disclaimer(language))
+
+    return "\n".join(lines)
