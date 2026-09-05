@@ -443,17 +443,21 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
         except Exception as e:
             log.warning("[chat.stream] Failed to set stream status key: %s", e)
 
-        # Set the LLM override in this async context.
-        override_token = None
-        if override_cfg is not None:
-            try:
-                override_llm = build_llm(override_cfg)
-                override_token = set_llm_override(override_llm)
-            except Exception as e:
-                log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
+        # Capture the event loop before entering the thread so _run_stream
+        # can schedule publish coroutines back on it.
+        loop = asyncio.get_event_loop()
 
         async def _run_redis_stream():
             """Run graph.stream() in a thread, publishing each chunk to Redis."""
+            # Set/reset the LLM override inside this task's own context so
+            # the ContextVar token doesn't cross context boundaries.
+            override_token = None
+            if override_cfg is not None:
+                try:
+                    override_llm = build_llm(override_cfg)
+                    override_token = set_llm_override(override_llm)
+                except Exception as e:
+                    log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
             try:
                 def _run_stream():
                     """Run graph.stream() in a thread (sync checkpointer).
@@ -461,15 +465,13 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
                     Publishes each chunk to the Redis channel as it arrives
                     so subscribers see incremental progress (not batched).
                     """
-                    import asyncio as _aio
-                    loop = _aio.get_event_loop()
                     for chunk in graph.stream(state, config, stream_mode="updates"):
                         if isinstance(chunk, dict):
                             for node_name in chunk:
                                 label = _NODE_LABELS.get(node_name, node_name.replace("_", " ").title())
                                 event = {"event": "progress", "node": node_name, "label": label}
                                 # Schedule the publish on the event loop.
-                                _aio.run_coroutine_threadsafe(
+                                asyncio.run_coroutine_threadsafe(
                                     publish_event(channel, event), loop,
                                 )
 
