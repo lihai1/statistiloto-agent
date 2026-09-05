@@ -5,7 +5,7 @@ import warnings
 
 from app.gen import lottery_pb2 as app_dot_gen_dot_lottery__pb2
 
-GRPC_GENERATED_VERSION = '1.83.0'
+GRPC_GENERATED_VERSION = '1.83.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

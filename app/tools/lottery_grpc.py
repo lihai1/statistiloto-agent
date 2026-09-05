@@ -158,6 +158,19 @@ def _get_stub():
     return _stub
 
 
+def _auth_metadata(jwt_token: str | None) -> list[tuple[str, str]] | None:
+    """Build gRPC metadata with the user's JWT for the Go lottery service.
+
+    The Go service's auth interceptor expects an ``authorization`` metadata
+    entry in ``Bearer <token>`` format (same as the HTTP Authorization header).
+    Returns None when no token is available (dev/test mode).
+    """
+    if not jwt_token:
+        return None
+    bearer = jwt_token if jwt_token.startswith("Bearer ") else f"Bearer {jwt_token}"
+    return [("authorization", bearer)]
+
+
 def _build_window(window_from: str | None, window_to: str | None):
     """Build a proto DateWindow from optional ISO date strings.
 
@@ -187,7 +200,8 @@ def _build_window(window_from: str | None, window_to: str | None):
 
 def generate_form(how_many: int, form_type: int, will_be: list[int] | None = None,
                   strength: int = 2, window_from: str | None = None,
-                  window_to: str | None = None) -> dict:
+                  window_to: str | None = None,
+                  jwt_token: str | None = None) -> dict:
     """Tool: generate lottery combinations via the Go lottery-stats-server.
 
     Args:
@@ -196,6 +210,8 @@ def generate_form(how_many: int, form_type: int, will_be: list[int] | None = Non
         will_be: lucky numbers to include in every form.
         strength: 2=STRONG (frequent/hot), 1=WEAK (less frequent/cold).
         window_from / window_to: optional ISO date bounds for the historical window.
+        jwt_token: the user's raw JWT token (forwarded to the Go service as
+            ``authorization`` gRPC metadata for defense-in-depth auth).
     """
     cache_kwargs = {
         "how_many": how_many, "form_type": form_type, "will_be": will_be,
@@ -224,7 +240,7 @@ def generate_form(how_many: int, form_type: int, will_be: list[int] | None = Non
         )
         if window is not None:
             req.window.CopyFrom(window)
-        resp = stub.GenerateForm(req)
+        resp = stub.GenerateForm(req, metadata=_auth_metadata(jwt_token))
         forms = []
         for s in resp.forms:
             entry = {"numbers": list(s.numbers)}
@@ -239,7 +255,8 @@ def generate_form(how_many: int, form_type: int, will_be: list[int] | None = Non
 def get_statistics(how_many: int = 10, group_size: int = 2, strength: str | int = "hot",
                    window_from: str | None = None, window_to: str | None = None,
                    # Backward-compat aliases (old callers may pass form_type).
-                   form_type: int | None = None) -> dict:
+                   form_type: int | None = None,
+                   jwt_token: str | None = None) -> dict:
     """Tool: calculate frequent/infrequent number groups via the Go lottery-stats-server.
 
     Args:
@@ -250,6 +267,8 @@ def get_statistics(how_many: int = 10, group_size: int = 2, strength: str | int 
                   Also accepts proto enum ints: 2=hot, 1=cold.
         window_from / window_to: optional ISO date bounds for the historical window.
         form_type: deprecated alias for group_size (backward compat).
+        jwt_token: the user's raw JWT token (forwarded as gRPC ``authorization``
+            metadata for defense-in-depth auth on the Go service).
 
     Returns:
         {"groups": [{"numbers": [..], "count": N}, ...]}
@@ -286,14 +305,15 @@ def get_statistics(how_many: int = 10, group_size: int = 2, strength: str | int 
         )
         if window is not None:
             req.window.CopyFrom(window)
-        resp = stub.GetStatistics(req)
+        resp = stub.GetStatistics(req, metadata=_auth_metadata(jwt_token))
         return {"groups": [{"numbers": list(p.numbers), "count": p.count} for p in resp.pairs]}
 
     return _cached("get_statistics", cache_kwargs, _fetch)
 
 
 def analyze(form: list[int], window_from: str | None = None,
-            window_to: str | None = None) -> dict:
+            window_to: str | None = None,
+            jwt_token: str | None = None) -> dict:
     """Tool: analyze user-selected numbers against historical draws.
 
     Returns frequency groups for all subset sizes 1-6 of the selected numbers,
@@ -303,6 +323,8 @@ def analyze(form: list[int], window_from: str | None = None,
         form: the user's selected numbers (1-6 regular numbers).
               If a 7th number (strong) is included, it is stripped by the Go service.
         window_from / window_to: optional ISO date bounds for the historical window.
+        jwt_token: the user's raw JWT token (forwarded as gRPC ``authorization``
+            metadata for defense-in-depth auth on the Go service).
 
     Returns:
         {
@@ -333,7 +355,7 @@ def analyze(form: list[int], window_from: str | None = None,
         req = lottery_pb2.AnalyzeRequest(form=form)
         if window is not None:
             req.window.CopyFrom(window)
-        resp = stub.Analyze(req)
+        resp = stub.Analyze(req, metadata=_auth_metadata(jwt_token))
         return {
             "frequency_groups": [
                 {
@@ -355,7 +377,8 @@ def analyze(form: list[int], window_from: str | None = None,
 def simulate(form: list[int], strong: int = 0,
              archive_from: str | None = None, archive_to: str | None = None,
              simulate_from: str | None = None, simulate_to: str | None = None,
-             ticket_cost: float = 3.0, prize_amounts: list[float] | None = None) -> dict:
+             ticket_cost: float = 3.0, prize_amounts: list[float] | None = None,
+             jwt_token: str | None = None) -> dict:
     """Tool: backtest user-selected numbers against historical draws.
 
     Supports systematic forms (6, 8, 10, 12 numbers) where all C(N,6)
@@ -372,6 +395,8 @@ def simulate(form: list[int], strong: int = 0,
         ticket_cost: ticket cost per table/combination in ILS (default 3.0).
         prize_amounts: optional user-configurable prize amounts per tier (ILS).
             Index 0 = tier 1 (6+strong), ..., 7 = tier 8 (3). Must be length 0 or 8.
+        jwt_token: the user's raw JWT token (forwarded as gRPC ``authorization``
+            metadata for defense-in-depth auth on the Go service).
 
     Returns:
         {"draws": [...], "summary": {total_draws, total_spent, total_won, net, ...}}
@@ -411,7 +436,7 @@ def simulate(form: list[int], strong: int = 0,
             req.simulate_window.CopyFrom(simulate_window)
         if prize_amounts:
             req.prize_amounts.extend(prize_amounts)
-        resp = stub.Simulate(req)
+        resp = stub.Simulate(req, metadata=_auth_metadata(jwt_token))
 
         draws = []
         for d in resp.draws:

@@ -25,6 +25,16 @@ Python LangGraph agent worker with hierarchical multi-agent orchestration (Optio
 - **Tool error propagation** — `app/tools/__init__.py` defines `ToolError` for clean exception typing from tools.
 - **Admin command keyword map** — `app/rag/admin_commands.yaml` maps keyword phrases to admin tools (`read_token_usage`, `query_audit_log`, `search_web`, `list_db_tables`, `query_db`, etc.) for the `admin_ops` guard.
 
+## Auth (FastAPI dependencies)
+
+All endpoints use FastAPI `Depends()` for JWT validation — no manual try/except boilerplate.
+
+- `get_current_user(authorization: str = Header(...)) -> TokenClaims` — validates JWT, returns claims. Raises `HTTPException(401)` on invalid/expired token.
+- `require_admin_user(claims: TokenClaims = Depends(get_current_user)) -> TokenClaims` — wraps `get_current_user`, raises `HTTPException(403)` when `tier != "admin"`.
+- User endpoints: `claims: TokenClaims = Depends(get_current_user)` — 401 on bad token.
+- Admin endpoints: `claims: TokenClaims = Depends(require_admin_user)` — 401 on bad token, 403 on non-admin tier.
+- Both helpers are in `app/security.py`. Endpoint signatures in `app/main.py` declare the dependency; FastAPI handles the rest.
+
 ## Tool classification (HITL gating)
 
 Write tools (require human approval before executing):

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import jwt
 from app.config.settings import get_settings
+from fastapi import Depends, Header, HTTPException
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +124,34 @@ def require_admin(claims: TokenClaims) -> None:
     """Raise JWTError if the user is not an admin."""
     if claims.tier != "admin":
         raise JWTError(f"Admin access required, got tier={claims.tier}")
+
+
+# ── FastAPI dependencies ──────────────────────────────────────
+# These reusable dependencies replace the per-endpoint try/except
+# boilerplate that was duplicated across all 21 endpoints in main.py.
+# Using Depends() also surfaces auth requirements in the OpenAPI schema.
+
+async def get_current_user(authorization: str = Header(...)) -> TokenClaims:
+    """FastAPI dependency: validate the Bearer JWT and return TokenClaims.
+
+    Raises HTTPException(401) for missing, malformed, or invalid tokens.
+    """
+    try:
+        return validate_jwt(authorization)
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+async def require_admin_user(claims: TokenClaims = Depends(get_current_user)) -> TokenClaims:
+    """FastAPI dependency: require an admin-tier user.
+
+    Raises HTTPException(403) only when the token is valid but the user
+    is not an admin. Invalid/expired tokens are caught by
+    ``get_current_user`` and return 401.
+    """
+    if claims.tier != "admin":
+        raise HTTPException(status_code=403, detail=f"Admin access required, got tier={claims.tier}")
+    return claims
 
 
 # ── Test helpers ─────────────────────────────────────────────

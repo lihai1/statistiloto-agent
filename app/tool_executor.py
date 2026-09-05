@@ -81,6 +81,7 @@ def _dispatch(tool_name: str, args: dict, claims: TokenClaims) -> Any:
             strength=args.get("strength", 2),
             window_from=args.get("window_from"),
             window_to=args.get("window_to"),
+            jwt_token=claims.raw_token,
         )
     if tool_name == "get_statistics":
         return lottery_grpc.get_statistics(
@@ -89,12 +90,14 @@ def _dispatch(tool_name: str, args: dict, claims: TokenClaims) -> Any:
             strength=args.get("strength", "hot"),
             window_from=args.get("window_from"),
             window_to=args.get("window_to"),
+            jwt_token=claims.raw_token,
         )
     if tool_name == "analyze":
         return lottery_grpc.analyze(
             form=args.get("form", []),
             window_from=args.get("window_from"),
             window_to=args.get("window_to"),
+            jwt_token=claims.raw_token,
         )
     if tool_name == "simulate":
         archive_window = args.get("archive_window") or {}
@@ -106,6 +109,7 @@ def _dispatch(tool_name: str, args: dict, claims: TokenClaims) -> Any:
             archive_to=archive_window.get("window_to"),
             simulate_from=simulate_window.get("window_from"),
             simulate_to=simulate_window.get("window_to"),
+            jwt_token=claims.raw_token,
         )
     if tool_name == "list_saved_numbers":
         return saved_numbers.list_saved_numbers(user_sub=claims.sub, jwt_token=claims.raw_token)

@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, ConfigDict
@@ -29,7 +28,11 @@ from pydantic import BaseModel, Field, ConfigDict
 from app.config.settings import get_settings
 from app.llm.config_store import get_llm_store, set_llm_store, LLMConfigStore, LLMConfig, build_llm
 from app.llm.router import set_llm_override, reset_llm_override
-from app.security import validate_jwt, require_admin, TokenClaims, JWTError
+from app.security import (
+    TokenClaims,
+    get_current_user,
+    require_admin_user,
+)
 
 log = logging.getLogger(__name__)
 
@@ -196,7 +199,7 @@ def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest, authorization: str = Header(...)):
+async def chat(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)):
     """Process a chat message. Returns JSON with response or paused status.
 
     Uses sync graph.invoke() because PostgresSaver doesn't implement
@@ -207,12 +210,6 @@ async def chat(req: ChatRequest, authorization: str = Header(...)):
     single request. The override is scoped to the request via a ContextVar
     that propagates into the graph's thread.
     """
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        log.error("[chat] JWT validation failed: %s", e)
-        raise HTTPException(status_code=401, detail=str(e))
-
     log.info("[chat] START user=%s tier=%s session=%s intent=%s", claims.sub, claims.tier, req.session_id, req.intent)
 
     # Admin-only: build a per-request LLM override from the specified config_id.
@@ -382,7 +379,7 @@ def _setup_chat_request(claims, req):
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
+async def chat_stream(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)):
     """Stream agent events as SSE (node-level progress + final response).
 
     Same JWT validation, LLM override, history, and recursion-limit behavior
@@ -403,12 +400,6 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
 
     The existing POST /chat remains unchanged as a compatibility/fallback endpoint.
     """
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        log.error("[chat.stream] JWT validation failed: %s", e)
-        raise HTTPException(status_code=401, detail=str(e))
-
     log.info("[chat.stream] START user=%s tier=%s session=%s", claims.sub, claims.tier, req.session_id)
 
     # Admin-only LLM override (same as /chat).
@@ -578,14 +569,8 @@ async def chat_stream(req: ChatRequest, authorization: str = Header(...)):
 
 
 @app.post("/approve")
-async def approve(req: ApproveRequest, authorization: str = Header(...)):
+async def approve(req: ApproveRequest, claims: TokenClaims = Depends(get_current_user)):
     """Resume a paused HITL thread with a human decision."""
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        log.error("[approve] JWT validation failed: %s", e)
-        raise HTTPException(status_code=401, detail=str(e))
-
     log.info("[approve] START user=%s session=%s approved=%s", claims.sub, req.session_id, req.approved)
 
     graph = get_graph()
@@ -622,13 +607,8 @@ async def approve(req: ApproveRequest, authorization: str = Header(...)):
 
 
 @app.get("/llm-config")
-async def get_llm_config(authorization: str = Header(...)):
+async def get_llm_config(_claims: TokenClaims = Depends(get_current_user)):
     """Read the current global LLM config (any authenticated user)."""
-    try:
-        validate_jwt(authorization)
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
     cfg = get_llm_store().get_config()
     return {
         "provider": cfg.provider,
@@ -642,18 +622,12 @@ async def get_llm_config(authorization: str = Header(...)):
 
 
 @app.put("/llm-config")
-async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)):
+async def set_llm_config(req: LLMConfigRequest, claims: TokenClaims = Depends(require_admin_user)):
     """Create a new LLM config and activate it (admin only). Hot-reloaded within ~10s.
 
     Each PUT inserts a new named config row and marks it as the active one.
     The previous active config is deactivated (only one active at a time).
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.store import get_pool
     import time
     timeout = req.request_timeout_seconds or 300
@@ -687,14 +661,8 @@ async def set_llm_config(req: LLMConfigRequest, authorization: str = Header(...)
 
 
 @app.get("/llm-configs")
-async def list_llm_configs(authorization: str = Header(...)):
+async def list_llm_configs(claims: TokenClaims = Depends(require_admin_user)):
     """List all saved LLM configs (admin only). The active one is flagged."""
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.store import get_pool
     pool = get_pool()
     with pool.connection() as conn:
@@ -723,17 +691,11 @@ async def list_llm_configs(authorization: str = Header(...)):
 
 
 @app.post("/llm-configs")
-async def create_llm_config(req: LLMConfigRequest, authorization: str = Header(...)):
+async def create_llm_config(req: LLMConfigRequest, claims: TokenClaims = Depends(require_admin_user)):
     """Create a new saved LLM config without activating it (admin only).
 
     Use PUT /llm-config/{id}/activate to make it the active config.
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.store import get_pool
     import time
     timeout = req.request_timeout_seconds or 300
@@ -754,17 +716,12 @@ async def create_llm_config(req: LLMConfigRequest, authorization: str = Header(.
 
 
 @app.put("/llm-configs/{config_id}")
-async def update_llm_config(config_id: int, req: LLMConfigRequest, authorization: str = Header(...)):
+async def update_llm_config(config_id: int, req: LLMConfigRequest, claims: TokenClaims = Depends(require_admin_user)):
     """Update an existing saved LLM config by id (admin only).
 
     Does not change activation status. If the updated config is the active
     one, the LLM is hot-reloaded with the new values.
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
 
     from app.rag.store import get_pool
     import time
@@ -798,14 +755,8 @@ async def update_llm_config(config_id: int, req: LLMConfigRequest, authorization
 
 
 @app.put("/llm-configs/{config_id}/activate")
-async def activate_llm_config(config_id: int, authorization: str = Header(...)):
+async def activate_llm_config(config_id: int, claims: TokenClaims = Depends(require_admin_user)):
     """Activate a saved LLM config by id (admin only). Hot-reloads the LLM."""
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.store import get_pool
     import time
     pool = get_pool()
@@ -824,7 +775,7 @@ async def activate_llm_config(config_id: int, authorization: str = Header(...)):
 
 
 @app.post("/llm-configs/{config_id}/test")
-async def test_llm_config(config_id: int, authorization: str = Header(...)):
+async def test_llm_config(config_id: int, claims: TokenClaims = Depends(require_admin_user)):
     """Test that a saved LLM config can actually connect (admin only).
 
     Uses ``check_connection`` to verify connectivity and credentials
@@ -832,12 +783,6 @@ async def test_llm_config(config_id: int, authorization: str = Header(...)):
     ``{"status": "ok", "id": ..., "response": detail}`` on success or
     ``{"status": "error", "id": ..., "response": error_msg}`` on failure.
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.store import get_pool
     from app.llm.config_store import LLMConfig, check_connection
     pool = get_pool()
@@ -867,14 +812,8 @@ async def test_llm_config(config_id: int, authorization: str = Header(...)):
 
 
 @app.delete("/llm-configs/{config_id}")
-async def delete_llm_config(config_id: int, authorization: str = Header(...)):
+async def delete_llm_config(config_id: int, claims: TokenClaims = Depends(require_admin_user)):
     """Delete a saved LLM config (admin only). Cannot delete the active config."""
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.store import get_pool
     pool = get_pool()
     with pool.connection() as conn:
@@ -892,47 +831,29 @@ async def delete_llm_config(config_id: int, authorization: str = Header(...)):
 
 
 @app.get("/token-usage")
-async def get_token_usage(authorization: str = Header(...)):
+async def get_token_usage(claims: TokenClaims = Depends(require_admin_user)):
     """Read token usage stats (admin only). Returns aggregated rows from the DB."""
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.tools.admin_ops import read_token_usage
     rows = read_token_usage(claims)
     return {"rows": rows}
 
 
 @app.get("/audit-log")
-async def get_audit_log(authorization: str = Header(...), limit: int = 50):
+async def get_audit_log(claims: TokenClaims = Depends(require_admin_user), limit: int = 50):
     """Read audit log entries (admin only). Returns recent entries from the DB."""
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.tools.admin_ops import query_audit_log
     rows = query_audit_log(claims, limit=limit)
     return {"rows": rows}
 
 
 @app.post("/reindex")
-async def reindex_docs(authorization: str = Header(...)):
+async def reindex_docs(claims: TokenClaims = Depends(require_admin_user)):
     """Reindex product docs AND examples into RAG corpora (admin only).
 
     Reads markdown from app/rag/docs_source/ into the 'docs' corpus and
     YAML examples from app/rag/examples_source/<lang>/ into the 'examples'
     corpus. Content-hash dedup skips unchanged chunks.
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.rag.ingest import ingest_docs, ingest_examples
     try:
         docs_result = ingest_docs()
@@ -948,24 +869,18 @@ async def reindex_docs(authorization: str = Header(...)):
 # ── Free-tier LLM toggle ──────────────────────────────────────
 
 @app.get("/free-llm")
-async def get_free_llm_toggle(authorization: str = Header(...)):
+async def get_free_llm_toggle(claims: TokenClaims = Depends(require_admin_user)):
     """Read the free-tier LLM toggle state (admin only).
 
     Returns whether free-tier users are currently allowed to invoke the LLM
     for ambiguous/domain-explanation requests. Default: disabled.
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.free_tier_llm import is_free_llm_enabled
     return {"enabled": is_free_llm_enabled()}
 
 
 @app.put("/free-llm")
-async def set_free_llm_toggle(req: FreeLlmToggleRequest, authorization: str = Header(...)):
+async def set_free_llm_toggle(req: FreeLlmToggleRequest, claims: TokenClaims = Depends(require_admin_user)):
     """Set the free-tier LLM toggle (admin only).
 
     When enabled, free-tier ambiguous/domain-explanation requests route to
@@ -979,12 +894,6 @@ async def set_free_llm_toggle(req: FreeLlmToggleRequest, authorization: str = He
     requests — it does NOT grant free users any additional tools or write
     access. Authorization remains enforced by CapabilityConfig.
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     from app.free_tier_llm import set_free_llm_enabled, is_free_llm_enabled
     set_free_llm_enabled(req.enabled)
     log.info("[free-llm] admin=%s set enabled=%s", claims.sub, req.enabled)
@@ -1028,7 +937,7 @@ _ANTHROPIC_MODELS = [
 @app.get("/llm-models")
 async def list_llm_models(
     provider: str,
-    authorization: str = Header(...),
+    claims: TokenClaims = Depends(require_admin_user),
     base_url: str | None = Query(None),
 ):
     """List available models for a provider (admin only).
@@ -1049,12 +958,6 @@ async def list_llm_models(
         {"provider": "ollama",
          "models": [{"name": "llama3.1:8b", "size": 4661214619, "capabilities": ["tools"]}, ...]}
     """
-    try:
-        claims = validate_jwt(authorization)
-        require_admin(claims)
-    except JWTError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
     if provider == "ollama":
         return {"provider": "ollama", "models": await _list_ollama_models(base_url)}
     if provider == "gemini":
@@ -1120,17 +1023,12 @@ async def _list_ollama_models(base_url: str | None = None) -> list[dict]:
 # ── Chat session history ─────────────────────────────────────
 
 @app.get("/sessions")
-async def list_sessions(authorization: str = Header(...)):
+async def list_sessions(claims: TokenClaims = Depends(get_current_user)):
     """List the caller's chat sessions (newest first).
 
     Tier limits are enforced on write (upsert), so the returned list is
     already within quota. Also returns the tier's max session count.
     """
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
     from app.sessions import list_sessions as _list, get_session_limit
     sessions = _list(claims.sub, claims.tier)
     limit = get_session_limit(claims.tier)
@@ -1142,13 +1040,8 @@ async def list_sessions(authorization: str = Header(...)):
 
 
 @app.get("/sessions/{session_id}")
-async def get_session(session_id: str, authorization: str = Header(...)):
+async def get_session(session_id: str, claims: TokenClaims = Depends(get_current_user)):
     """Load a session's full message history from the checkpointer."""
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
     from app.sessions import get_session_messages
     graph = get_graph()
     messages = get_session_messages(claims.sub, session_id, graph)
@@ -1156,13 +1049,8 @@ async def get_session(session_id: str, authorization: str = Header(...)):
 
 
 @app.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, authorization: str = Header(...)):
+async def delete_session(session_id: str, claims: TokenClaims = Depends(get_current_user)):
     """Delete a single chat session and its checkpointer state."""
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
     from app.sessions import delete_session as _delete
     deleted = _delete(claims.sub, session_id)
     if not deleted:
@@ -1171,13 +1059,8 @@ async def delete_session(session_id: str, authorization: str = Header(...)):
 
 
 @app.delete("/sessions")
-async def delete_all_sessions(authorization: str = Header(...)):
+async def delete_all_sessions(claims: TokenClaims = Depends(get_current_user)):
     """Delete all of the caller's chat sessions."""
-    try:
-        claims = validate_jwt(authorization)
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
     from app.sessions import delete_all_sessions as _delete_all
     count = _delete_all(claims.sub)
     return {"status": "deleted", "count": count}
