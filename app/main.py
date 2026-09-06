@@ -13,6 +13,8 @@ Endpoints:
   GET  /sessions/{id} — load a session's full message history
   DELETE /sessions/{id} — delete a session and its checkpointer state
   DELETE /sessions    — delete all of the caller's sessions
+  POST   /sessions/archive  — archive all of the caller's sessions (soft-delete)
+  GET    /sessions/archived — list archived sessions (admin only)
 """
 
 from __future__ import annotations
@@ -1064,3 +1066,41 @@ async def delete_all_sessions(claims: TokenClaims = Depends(get_current_user)):
     from app.sessions import delete_all_sessions as _delete_all
     count = _delete_all(claims.sub)
     return {"status": "deleted", "count": count}
+
+
+@app.post("/sessions/archive")
+async def archive_sessions(claims: TokenClaims = Depends(get_current_user)):
+    """Archive all of the caller's chat sessions (soft-delete on account deletion).
+
+    Sets ``archived_at = now()`` on every chat_sessions row owned by the
+    caller and deletes the LangGraph checkpointer state for those threads.
+    Archived sessions disappear from the active session list but remain in
+    the table for audit (visible to admins via GET /sessions/archived).
+    """
+    log.info("[archive_sessions] START user=%s", claims.sub)
+    from app.rag.store import get_pool
+    from app.sessions import archive_user_sessions
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            count = archive_user_sessions(conn, claims.sub)
+        log.info("[archive_sessions] SUCCESS user=%s archived=%d", claims.sub, count)
+        return {"status": "archived", "count": count}
+    except Exception as e:
+        log.error("[archive_sessions] ERROR user=%s type=%s msg=%s",
+                  claims.sub, type(e).__name__, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Archive failed: {type(e).__name__}: {e}")
+
+
+@app.get("/sessions/archived")
+async def list_archived_sessions(claims: TokenClaims = Depends(require_admin_user)):
+    """List archived chat sessions (admin only).
+
+    Returns sessions across all users that have been soft-archived via
+    POST /sessions/archive, newest archived first.
+    """
+    log.info("[archived_sessions] START admin=%s", claims.sub)
+    from app.sessions import list_archived_sessions as _list_archived
+    sessions = _list_archived()
+    log.info("[archived_sessions] SUCCESS admin=%s count=%d", claims.sub, len(sessions))
+    return {"sessions": [s.to_dict() for s in sessions]}

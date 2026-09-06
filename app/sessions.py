@@ -164,7 +164,7 @@ def list_sessions(user_sub: str, tier: str, limit: int = 50) -> list[ChatSession
             """
             SELECT session_id, thread_id, title, last_message, message_count, created_at, updated_at
             FROM agent.chat_sessions
-            WHERE user_sub = %s
+            WHERE user_sub = %s AND archived_at IS NULL
             ORDER BY updated_at DESC
             LIMIT %s
             """,
@@ -245,6 +245,61 @@ def delete_all_sessions(user_sub: str) -> int:
         for r in rows:
             _delete_checkpointer_state(conn, r[0])
         return len(rows)
+
+
+def archive_user_sessions(conn, user_sub: str) -> int:
+    """Soft-archive all chat sessions for a user and delete their checkpointer state.
+
+    Sets ``archived_at = now()`` on every chat_sessions row for the given
+    user_sub (so the sessions no longer appear in the active list) and
+    deletes the LangGraph checkpointer state for those threads (freeing
+    the message history storage). Returns the number of sessions archived.
+
+    The caller owns the connection (``conn``) so this can run inside a
+    larger transaction — e.g. an account-deletion flow that also touches
+    other tables.
+    """
+    rows = conn.execute(
+        """
+        UPDATE agent.chat_sessions
+        SET archived_at = now()
+        WHERE user_sub = %s AND archived_at IS NULL
+        RETURNING thread_id
+        """,
+        (user_sub,),
+    ).fetchall()
+    for r in rows:
+        _delete_checkpointer_state(conn, r[0])
+    log.info("[sessions] Archived %d session(s) for user=%s", len(rows), user_sub)
+    return len(rows)
+
+
+def list_archived_sessions(limit: int = 200) -> list[ChatSession]:
+    """List archived chat sessions across all users (admin only), newest archived first."""
+    pool = get_pool()
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT session_id, thread_id, title, last_message, message_count, created_at, updated_at
+            FROM agent.chat_sessions
+            WHERE archived_at IS NOT NULL
+            ORDER BY archived_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        ChatSession(
+            session_id=r[0],
+            thread_id=r[1],
+            title=r[2],
+            last_message=r[3],
+            message_count=r[4],
+            created_at=r[5],
+            updated_at=r[6],
+        )
+        for r in rows
+    ]
 
 
 def get_session_limit(tier: str) -> Optional[int]:

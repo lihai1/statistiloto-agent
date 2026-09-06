@@ -50,6 +50,10 @@
 - **FR-45**: The agent shall expose `GET /free-llm` (admin only) to read the free-tier LLM toggle (whether free-tier users receive LLM responses or a canned response) and `PUT /free-llm` (admin only) to set the toggle (`{ "enabled": true }`). The toggle defaults to disabled (free users get canned responses) and can be overridden at boot via the `FREE_LLM_ENABLED` env var.
 - **FR-46**: The `GET /llm-models` endpoint shall accept an optional `base_url` query param to list models from a non-default provider endpoint (e.g., a remote Ollama instance).
 - **FR-47**: The `/chat` endpoint shall accept an optional `config_id` to override the active LLM with a stored configuration for that request only (admin testing), and an optional `lang` hint (`he`/`en`) forwarded to worker subgraphs.
+- **FR-48**: The agent shall expose `POST /sessions/archive` (any authenticated user) to soft-archive all of the caller's chat sessions. This sets `archived_at = now()` on all matching `agent.chat_sessions` rows and deletes the LangGraph checkpointer state for each thread. Archived sessions disappear from the active session list but remain for admin audit. Returns the count of archived sessions. Used on account deletion.
+- **FR-49**: The agent shall expose `GET /sessions/archived` (admin only) to list archived chat sessions across all users, ordered newest first by `archived_at`. Used for admin audit of soft-archived accounts.
+- **FR-50**: The `agent.chat_sessions` table shall have an `archived_at` TIMESTAMPTZ column (nullable). Active session listing (`GET /sessions`) SHALL exclude rows where `archived_at IS NOT NULL`.
+- **FR-51**: Language-neutral messages (only digits, whitespace, or punctuation — e.g. a bare "1" answering a clarification) shall inherit the language from the prior conversation turn when available, so downstream prompts and responses stay consistent. Provenance is set to `"conversation"` when inherited, `"message"` otherwise. Detected via `LATIN_LETTER_RE` and `_is_language_neutral` in `app/normalizer.py`.
 
 ## Tier Requirements
 
@@ -123,7 +127,7 @@
 - **SR-2**: JWT validation shall verify the signature against Keycloak JWKS (`RS256` algorithm) when `JWT_VERIFY=true`.
 - **SR-3**: In dev/test mode (`JWT_VERIFY=false`), the agent shall decode the JWT without signature verification but still extract claims.
 - **SR-4**: Tier shall be extracted from JWT claims with priority: explicit `tier` claim > group membership (`/admins`, `/paid`, `/users`) > realm roles > `free`.
-- **SR-5**: Admin-only endpoints (`PUT /llm-config`, `GET /llm-configs`, `POST /llm-configs`, `PUT /llm-configs/{config_id}` (update), `PUT /llm-configs/{config_id}/activate`, `POST /llm-configs/{config_id}/test`, `DELETE /llm-configs/{config_id}`, `GET /llm-models`, `GET /free-llm`, `PUT /free-llm`, `GET /token-usage`, `GET /audit-log`, `POST /reindex`) shall require admin — `require_admin()` raises `JWTError` for non-admin tiers.
+- **SR-5**: Admin-only endpoints (`PUT /llm-config`, `GET /llm-configs`, `POST /llm-configs`, `PUT /llm-configs/{config_id}` (update), `PUT /llm-configs/{config_id}/activate`, `POST /llm-configs/{config_id}/test`, `DELETE /llm-configs/{config_id}`, `GET /llm-models`, `GET /free-llm`, `PUT /free-llm`, `GET /token-usage`, `GET /audit-log`, `POST /reindex`, `GET /sessions/archived`) shall require admin — `require_admin()` raises `JWTError` for non-admin tiers.
 - **SR-6**: The raw JWT token shall be passed through to tools (e.g., `save_numbers` forwards it to the Java BFF for backend authorization).
 
 ## Metering Requirements

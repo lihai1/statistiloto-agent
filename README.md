@@ -68,6 +68,8 @@ The **supervisor graph** is the single choke point for tier gating. It routes by
 | `GET` | `/sessions/{session_id}` | any authenticated user | Load a session's full message history from the checkpointer. |
 | `DELETE` | `/sessions/{session_id}` | any authenticated user | Delete one chat session and its checkpointer state. |
 | `DELETE` | `/sessions` | any authenticated user | Delete all of the caller's chat sessions. |
+| `POST` | `/sessions/archive` | any authenticated user | Soft-archive all of the caller's chat sessions (sets `archived_at`, deletes checkpointer state). Used on account deletion. |
+| `GET` | `/sessions/archived` | admin only | List archived chat sessions across all users (newest archived first). |
 | `GET` | `/llm-config` | any authenticated user | Read the current global LLM config (provider, model, base_url, etc.). |
 | `PUT` | `/llm-config` | admin only | Update the global LLM config. Hot-reloaded within ~10s via poller (or immediately via `force_refresh()`). |
 | `GET` | `/llm-configs` | admin only | List all stored LLM configurations. |
@@ -119,7 +121,7 @@ agent/
 ├── pyproject.toml             # Dependencies + pytest config
 ├── proto/                     # Shared protobuf (symlinked from ../proto)
 ├── db/
-│   └── init-agent.sql         # DB schema init (agent schema, pgvector)
+│   └── init-agent.sql         # DB schema init (agent schema, pgvector, chat_sessions.archived_at)
 ├── app/
 │   ├── main.py                # FastAPI app — endpoints, graph singleton
 │   ├── security.py            # JWT validation (JWKS), tier extraction, admin guard
@@ -127,9 +129,10 @@ agent/
 │   ├── hitl.py                # Human-in-the-loop interrupt helpers
 │   ├── checkpointer.py        # PostgresSaver checkpointer management
 │   ├── prompts.py             # Shared LLM prompt constants (domain knowledge, language rules)
-│   ├── sessions.py            # Chat session history (list/load/delete) + tier retention limits
+│   ├── sessions.py            # Chat session history (list/load/delete/archive) + tier retention limits
 │   ├── redis_client.py        # Optional Redis pub/sub client for /chat/stream events
 │   ├── renderer.py            # Zero-LLM deterministic response renderer
+│   ├── normalizer.py          # Request normalization + language detection (inherits language from prior turn for language-neutral messages)
 │   ├── domain_registry.py     # Canonical domain definitions (incl. lucky_numbers, saved_numbers)
 │   ├── config/
 │   │   ├── settings.py        # YAML + env config, tier configs
@@ -158,8 +161,9 @@ agent/
 │       ├── lottery_pb2.py
 │       └── lottery_pb2_grpc.py
 └── tests/
-    ├── unit/                  # 34 unit tests (no DB, no external services)
+    ├── unit/                  # Unit tests (no DB, no external services)
     │   ├── test_config.py
+    │   ├── test_normalizer_language.py
     │   ├── test_security.py
     │   └── test_supervisor.py
     └── integration/           # 36 integration tests (real pgvector DB, mock LLM)
@@ -232,9 +236,9 @@ Integration tests use a real pgvector PostgreSQL (from `docker-compose-dev.yml`)
 # Start the DB first
 docker compose -f docker-compose-dev.yml up -d db
 
-make test             # all tests (unit + integration) — 70 tests
-make test-unit        # unit tests only (no DB needed) — 34 tests
-make test-integration # integration tests only (needs DB) — 36 tests
+make test             # all tests (unit + integration)
+make test-unit        # unit tests only (no DB needed)
+make test-integration # integration tests only (needs DB)
 ```
 
 ### Test Conventions

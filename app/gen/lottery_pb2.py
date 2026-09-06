@@ -26,7 +26,7 @@ from google.api import annotations_pb2 as google_dot_api_dot_annotations__pb2
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x61pp/gen/lottery.proto\x12\nlottery.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"^\n\nDateWindow\x12(\n\x04\x66rom\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12&\n\x02to\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"\x9b\x01\n\x13GenerateFormRequest\x12\x10\n\x08how_many\x18\x01 \x01(\x05\x12\x11\n\tform_type\x18\x02 \x01(\x05\x12\x0f\n\x07will_be\x18\x03 \x03(\x05\x12&\n\x06window\x18\x04 \x01(\x0b\x32\x16.lottery.v1.DateWindow\x12&\n\x08strength\x18\x05 \x01(\x0e\x32\x14.lottery.v1.Strength\"<\n\tNumberSet\x12\x0f\n\x07numbers\x18\x01 \x03(\x05\x12\x13\n\x06strong\x18\x02 \x01(\x05H\x00\x88\x01\x01\x42\t\n\x07_strong\"<\n\x14GenerateFormResponse\x12$\n\x05\x66orms\x18\x01 \x03(\x0b\x32\x15.lottery.v1.NumberSet\"\x8b\x01\n\x14GetStatisticsRequest\x12\x10\n\x08how_many\x18\x01 \x01(\x05\x12\x11\n\tform_type\x18\x02 \x01(\x05\x12&\n\x06window\x18\x03 \x01(\x0b\x32\x16.lottery.v1.DateWindow\x12&\n\x08strength\x18\x04 \x01(\x0e\x32\x14.lottery.v1.Strength\"&\n\x04Pair\x12\x0f\n\x07numbers\x18\x01 \x03(\x05\x12\r\n\x05\x63ount\x18\x02 \x01(\x05\"8\n\x15GetStatisticsResponse\x12\x1f\n\x05pairs\x18\x01 \x03(\x0b\x32\x10.lottery.v1.Pair\"F\n\x0e\x41nalyzeRequest\x12\x0c\n\x04\x66orm\x18\x01 \x03(\x05\x12&\n\x06window\x18\x02 \x01(\x0b\x32\x16.lottery.v1.DateWindow\"]\n\x0f\x41nalyzeResponse\x12\x34\n\x10\x66requency_groups\x18\x01 \x03(\x0b\x32\x1a.lottery.v1.FrequencyGroup\x12\x14\n\x0c\x61rchive_size\x18\x02 \x01(\x05\"0\n\x0e\x46requencyEntry\x12\x0f\n\x07numbers\x18\x01 \x03(\x05\x12\r\n\x05\x63ount\x18\x02 \x01(\x05\"[\n\x0e\x46requencyGroup\x12\x0c\n\x04size\x18\x01 \x01(\x05\x12\x0e\n\x06\x63ombos\x18\x02 \x01(\x05\x12+\n\x07\x65ntries\x18\x03 \x03(\x0b\x32\x1a.lottery.v1.FrequencyEntry\"\x14\n\x12HealthCheckRequest\"L\n\x13HealthCheckResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x14\n\x0c\x64raws_loaded\x18\x03 \x01(\x05\"\xbc\x01\n\x0fSimulateRequest\x12\x0c\n\x04\x66orm\x18\x01 \x03(\x05\x12\x0e\n\x06strong\x18\x02 \x01(\x05\x12.\n\x0e\x61rchive_window\x18\x03 \x01(\x0b\x32\x16.lottery.v1.DateWindow\x12\x13\n\x0bticket_cost\x18\x04 \x01(\x01\x12\x15\n\rprize_amounts\x18\x05 \x03(\x01\x12/\n\x0fsimulate_window\x18\x06 \x01(\x0b\x32\x16.lottery.v1.DateWindow\"T\n\x0fSimulateTierHit\x12\x0c\n\x04tier\x18\x01 \x01(\x05\x12\x0c\n\x04hits\x18\x02 \x01(\x05\x12\x16\n\x0e\x61mount_per_hit\x18\x03 \x01(\x01\x12\r\n\x05total\x18\x04 \x01(\x01\"\xfb\x01\n\x12SimulateDrawResult\x12\x13\n\x0b\x64raw_number\x18\x01 \x01(\x05\x12-\n\tdraw_date\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x17\n\x0fwinning_numbers\x18\x03 \x03(\x05\x12\x16\n\x0ewinning_strong\x18\x04 \x01(\x05\x12.\n\ttier_hits\x18\x05 \x03(\x0b\x32\x1b.lottery.v1.SimulateTierHit\x12\x11\n\tprize_won\x18\x06 \x01(\x01\x12\x13\n\x0bticket_cost\x18\x07 \x01(\x01\x12\x18\n\x10used_real_prizes\x18\x08 \x01(\x08\"\\\n\x13SimulateTierSummary\x12\x0c\n\x04tier\x18\x01 \x01(\x05\x12\r\n\x05label\x18\x02 \x01(\t\x12\x12\n\ntotal_hits\x18\x03 \x01(\x05\x12\x14\n\x0ctotal_amount\x18\x04 \x01(\x01\"\xd0\x01\n\x0fSimulateSummary\x12\x13\n\x0btotal_draws\x18\x01 \x01(\x05\x12\x1a\n\x12total_combinations\x18\x02 \x01(\x05\x12\x13\n\x0btotal_spent\x18\x03 \x01(\x01\x12\x11\n\ttotal_won\x18\x04 \x01(\x01\x12\x0b\n\x03net\x18\x05 \x01(\x01\x12\x37\n\x0etier_summaries\x18\x06 \x03(\x0b\x32\x1f.lottery.v1.SimulateTierSummary\x12\x1e\n\x16\x64raws_with_real_prizes\x18\x07 \x01(\x05\"o\n\x10SimulateResponse\x12-\n\x05\x64raws\x18\x01 \x03(\x0b\x32\x1e.lottery.v1.SimulateDrawResult\x12,\n\x07summary\x18\x02 \x01(\x0b\x32\x1b.lottery.v1.SimulateSummary*:\n\x08Strength\x12\x18\n\x14STRENGTH_UNSPECIFIED\x10\x00\x12\x08\n\x04WEAK\x10\x01\x12\n\n\x06STRONG\x10\x02\x32\xa9\x04\n\x0eLotteryService\x12_\n\x0bHealthCheck\x12\x1e.lottery.v1.HealthCheckRequest\x1a\x1f.lottery.v1.HealthCheckResponse\"\x0f\x82\xd3\xe4\x93\x02\t\x12\x07/health\x12p\n\x0cGenerateForm\x12\x1f.lottery.v1.GenerateFormRequest\x1a .lottery.v1.GenerateFormResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\"\x12/api/generate/form:\x01*\x12t\n\rGetStatistics\x12 .lottery.v1.GetStatisticsRequest\x1a!.lottery.v1.GetStatisticsResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\"\x13/api/generate/pares:\x01*\x12\x64\n\x07\x41nalyze\x12\x1a.lottery.v1.AnalyzeRequest\x1a\x1b.lottery.v1.AnalyzeResponse\" \x82\xd3\xe4\x93\x02\x1a\"\x15/api/generate/analyze:\x01*\x12h\n\x08Simulate\x12\x1b.lottery.v1.SimulateRequest\x1a\x1c.lottery.v1.SimulateResponse\"!\x82\xd3\xe4\x93\x02\x1b\"\x16/api/generate/simulate:\x01*BU\n\x1b\x63om.statistiloto.lottery.v1P\x01Z4github.com/lihai1/stat-tree-server/pkg/gen;lotteryv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x61pp/gen/lottery.proto\x12\nlottery.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"^\n\nDateWindow\x12(\n\x04\x66rom\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12&\n\x02to\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"\x9b\x01\n\x13GenerateFormRequest\x12\x10\n\x08how_many\x18\x01 \x01(\x05\x12\x11\n\tform_type\x18\x02 \x01(\x05\x12\x0f\n\x07will_be\x18\x03 \x03(\x05\x12&\n\x06window\x18\x04 \x01(\x0b\x32\x16.lottery.v1.DateWindow\x12&\n\x08strength\x18\x05 \x01(\x0e\x32\x14.lottery.v1.Strength\"<\n\tNumberSet\x12\x0f\n\x07numbers\x18\x01 \x03(\x05\x12\x13\n\x06strong\x18\x02 \x01(\x05H\x00\x88\x01\x01\x42\t\n\x07_strong\"<\n\x14GenerateFormResponse\x12$\n\x05\x66orms\x18\x01 \x03(\x0b\x32\x15.lottery.v1.NumberSet\"\x8b\x01\n\x14GetStatisticsRequest\x12\x10\n\x08how_many\x18\x01 \x01(\x05\x12\x11\n\tform_type\x18\x02 \x01(\x05\x12&\n\x06window\x18\x03 \x01(\x0b\x32\x16.lottery.v1.DateWindow\x12&\n\x08strength\x18\x04 \x01(\x0e\x32\x14.lottery.v1.Strength\"&\n\x04Pair\x12\x0f\n\x07numbers\x18\x01 \x03(\x05\x12\r\n\x05\x63ount\x18\x02 \x01(\x05\"V\n\x15GetStatisticsResponse\x12\x1f\n\x05pairs\x18\x01 \x03(\x0b\x32\x10.lottery.v1.Pair\x12\x1c\n\x14total_draws_in_range\x18\x02 \x01(\x05\"F\n\x0e\x41nalyzeRequest\x12\x0c\n\x04\x66orm\x18\x01 \x03(\x05\x12&\n\x06window\x18\x02 \x01(\x0b\x32\x16.lottery.v1.DateWindow\"]\n\x0f\x41nalyzeResponse\x12\x34\n\x10\x66requency_groups\x18\x01 \x03(\x0b\x32\x1a.lottery.v1.FrequencyGroup\x12\x14\n\x0c\x61rchive_size\x18\x02 \x01(\x05\"0\n\x0e\x46requencyEntry\x12\x0f\n\x07numbers\x18\x01 \x03(\x05\x12\r\n\x05\x63ount\x18\x02 \x01(\x05\"[\n\x0e\x46requencyGroup\x12\x0c\n\x04size\x18\x01 \x01(\x05\x12\x0e\n\x06\x63ombos\x18\x02 \x01(\x05\x12+\n\x07\x65ntries\x18\x03 \x03(\x0b\x32\x1a.lottery.v1.FrequencyEntry\"\x14\n\x12HealthCheckRequest\"L\n\x13HealthCheckResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x14\n\x0c\x64raws_loaded\x18\x03 \x01(\x05\"\xbc\x01\n\x0fSimulateRequest\x12\x0c\n\x04\x66orm\x18\x01 \x03(\x05\x12\x0e\n\x06strong\x18\x02 \x01(\x05\x12.\n\x0e\x61rchive_window\x18\x03 \x01(\x0b\x32\x16.lottery.v1.DateWindow\x12\x13\n\x0bticket_cost\x18\x04 \x01(\x01\x12\x15\n\rprize_amounts\x18\x05 \x03(\x01\x12/\n\x0fsimulate_window\x18\x06 \x01(\x0b\x32\x16.lottery.v1.DateWindow\"T\n\x0fSimulateTierHit\x12\x0c\n\x04tier\x18\x01 \x01(\x05\x12\x0c\n\x04hits\x18\x02 \x01(\x05\x12\x16\n\x0e\x61mount_per_hit\x18\x03 \x01(\x01\x12\r\n\x05total\x18\x04 \x01(\x01\"\xfb\x01\n\x12SimulateDrawResult\x12\x13\n\x0b\x64raw_number\x18\x01 \x01(\x05\x12-\n\tdraw_date\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x17\n\x0fwinning_numbers\x18\x03 \x03(\x05\x12\x16\n\x0ewinning_strong\x18\x04 \x01(\x05\x12.\n\ttier_hits\x18\x05 \x03(\x0b\x32\x1b.lottery.v1.SimulateTierHit\x12\x11\n\tprize_won\x18\x06 \x01(\x01\x12\x13\n\x0bticket_cost\x18\x07 \x01(\x01\x12\x18\n\x10used_real_prizes\x18\x08 \x01(\x08\"\\\n\x13SimulateTierSummary\x12\x0c\n\x04tier\x18\x01 \x01(\x05\x12\r\n\x05label\x18\x02 \x01(\t\x12\x12\n\ntotal_hits\x18\x03 \x01(\x05\x12\x14\n\x0ctotal_amount\x18\x04 \x01(\x01\"\xd0\x01\n\x0fSimulateSummary\x12\x13\n\x0btotal_draws\x18\x01 \x01(\x05\x12\x1a\n\x12total_combinations\x18\x02 \x01(\x05\x12\x13\n\x0btotal_spent\x18\x03 \x01(\x01\x12\x11\n\ttotal_won\x18\x04 \x01(\x01\x12\x0b\n\x03net\x18\x05 \x01(\x01\x12\x37\n\x0etier_summaries\x18\x06 \x03(\x0b\x32\x1f.lottery.v1.SimulateTierSummary\x12\x1e\n\x16\x64raws_with_real_prizes\x18\x07 \x01(\x05\"o\n\x10SimulateResponse\x12-\n\x05\x64raws\x18\x01 \x03(\x0b\x32\x1e.lottery.v1.SimulateDrawResult\x12,\n\x07summary\x18\x02 \x01(\x0b\x32\x1b.lottery.v1.SimulateSummary*:\n\x08Strength\x12\x18\n\x14STRENGTH_UNSPECIFIED\x10\x00\x12\x08\n\x04WEAK\x10\x01\x12\n\n\x06STRONG\x10\x02\x32\xa9\x04\n\x0eLotteryService\x12_\n\x0bHealthCheck\x12\x1e.lottery.v1.HealthCheckRequest\x1a\x1f.lottery.v1.HealthCheckResponse\"\x0f\x82\xd3\xe4\x93\x02\t\x12\x07/health\x12p\n\x0cGenerateForm\x12\x1f.lottery.v1.GenerateFormRequest\x1a .lottery.v1.GenerateFormResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\"\x12/api/generate/form:\x01*\x12t\n\rGetStatistics\x12 .lottery.v1.GetStatisticsRequest\x1a!.lottery.v1.GetStatisticsResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\"\x13/api/generate/pares:\x01*\x12\x64\n\x07\x41nalyze\x12\x1a.lottery.v1.AnalyzeRequest\x1a\x1b.lottery.v1.AnalyzeResponse\" \x82\xd3\xe4\x93\x02\x1a\"\x15/api/generate/analyze:\x01*\x12h\n\x08Simulate\x12\x1b.lottery.v1.SimulateRequest\x1a\x1c.lottery.v1.SimulateResponse\"!\x82\xd3\xe4\x93\x02\x1b\"\x16/api/generate/simulate:\x01*BU\n\x1b\x63om.statistiloto.lottery.v1P\x01Z4github.com/lihai1/stat-tree-server/pkg/gen;lotteryv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -44,8 +44,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_LOTTERYSERVICE'].methods_by_name['Analyze']._serialized_options = b'\202\323\344\223\002\032\"\025/api/generate/analyze:\001*'
   _globals['_LOTTERYSERVICE'].methods_by_name['Simulate']._loaded_options = None
   _globals['_LOTTERYSERVICE'].methods_by_name['Simulate']._serialized_options = b'\202\323\344\223\002\033\"\026/api/generate/simulate:\001*'
-  _globals['_STRENGTH']._serialized_start=2077
-  _globals['_STRENGTH']._serialized_end=2135
+  _globals['_STRENGTH']._serialized_start=2107
+  _globals['_STRENGTH']._serialized_end=2165
   _globals['_DATEWINDOW']._serialized_start=100
   _globals['_DATEWINDOW']._serialized_end=194
   _globals['_GENERATEFORMREQUEST']._serialized_start=197
@@ -59,31 +59,31 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PAIR']._serialized_start=620
   _globals['_PAIR']._serialized_end=658
   _globals['_GETSTATISTICSRESPONSE']._serialized_start=660
-  _globals['_GETSTATISTICSRESPONSE']._serialized_end=716
-  _globals['_ANALYZEREQUEST']._serialized_start=718
-  _globals['_ANALYZEREQUEST']._serialized_end=788
-  _globals['_ANALYZERESPONSE']._serialized_start=790
-  _globals['_ANALYZERESPONSE']._serialized_end=883
-  _globals['_FREQUENCYENTRY']._serialized_start=885
-  _globals['_FREQUENCYENTRY']._serialized_end=933
-  _globals['_FREQUENCYGROUP']._serialized_start=935
-  _globals['_FREQUENCYGROUP']._serialized_end=1026
-  _globals['_HEALTHCHECKREQUEST']._serialized_start=1028
-  _globals['_HEALTHCHECKREQUEST']._serialized_end=1048
-  _globals['_HEALTHCHECKRESPONSE']._serialized_start=1050
-  _globals['_HEALTHCHECKRESPONSE']._serialized_end=1126
-  _globals['_SIMULATEREQUEST']._serialized_start=1129
-  _globals['_SIMULATEREQUEST']._serialized_end=1317
-  _globals['_SIMULATETIERHIT']._serialized_start=1319
-  _globals['_SIMULATETIERHIT']._serialized_end=1403
-  _globals['_SIMULATEDRAWRESULT']._serialized_start=1406
-  _globals['_SIMULATEDRAWRESULT']._serialized_end=1657
-  _globals['_SIMULATETIERSUMMARY']._serialized_start=1659
-  _globals['_SIMULATETIERSUMMARY']._serialized_end=1751
-  _globals['_SIMULATESUMMARY']._serialized_start=1754
-  _globals['_SIMULATESUMMARY']._serialized_end=1962
-  _globals['_SIMULATERESPONSE']._serialized_start=1964
-  _globals['_SIMULATERESPONSE']._serialized_end=2075
-  _globals['_LOTTERYSERVICE']._serialized_start=2138
-  _globals['_LOTTERYSERVICE']._serialized_end=2691
+  _globals['_GETSTATISTICSRESPONSE']._serialized_end=746
+  _globals['_ANALYZEREQUEST']._serialized_start=748
+  _globals['_ANALYZEREQUEST']._serialized_end=818
+  _globals['_ANALYZERESPONSE']._serialized_start=820
+  _globals['_ANALYZERESPONSE']._serialized_end=913
+  _globals['_FREQUENCYENTRY']._serialized_start=915
+  _globals['_FREQUENCYENTRY']._serialized_end=963
+  _globals['_FREQUENCYGROUP']._serialized_start=965
+  _globals['_FREQUENCYGROUP']._serialized_end=1056
+  _globals['_HEALTHCHECKREQUEST']._serialized_start=1058
+  _globals['_HEALTHCHECKREQUEST']._serialized_end=1078
+  _globals['_HEALTHCHECKRESPONSE']._serialized_start=1080
+  _globals['_HEALTHCHECKRESPONSE']._serialized_end=1156
+  _globals['_SIMULATEREQUEST']._serialized_start=1159
+  _globals['_SIMULATEREQUEST']._serialized_end=1347
+  _globals['_SIMULATETIERHIT']._serialized_start=1349
+  _globals['_SIMULATETIERHIT']._serialized_end=1433
+  _globals['_SIMULATEDRAWRESULT']._serialized_start=1436
+  _globals['_SIMULATEDRAWRESULT']._serialized_end=1687
+  _globals['_SIMULATETIERSUMMARY']._serialized_start=1689
+  _globals['_SIMULATETIERSUMMARY']._serialized_end=1781
+  _globals['_SIMULATESUMMARY']._serialized_start=1784
+  _globals['_SIMULATESUMMARY']._serialized_end=1992
+  _globals['_SIMULATERESPONSE']._serialized_start=1994
+  _globals['_SIMULATERESPONSE']._serialized_end=2105
+  _globals['_LOTTERYSERVICE']._serialized_start=2168
+  _globals['_LOTTERYSERVICE']._serialized_end=2721
 # @@protoc_insertion_point(module_scope)

@@ -111,3 +111,7 @@ CREATE TABLE IF NOT EXISTS agent.chat_sessions (
     UNIQUE (user_sub, session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_updated ON agent.chat_sessions (user_sub, updated_at DESC);
+
+-- Idempotent migration: add archived_at column for soft-delete (session archive).
+ALTER TABLE IF EXISTS agent.chat_sessions
+    ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;

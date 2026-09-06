@@ -15,12 +15,13 @@ Python LangGraph agent worker with hierarchical multi-agent orchestration (Optio
 - **Token metering** — every LLM call logged to `agent.token_usage`; only admin can read token consumption
 - **Recursion limit** — per-tier cap on graph super-steps (free=6, paid=25, admin=50) wired into `graph.invoke()`
 - **gRPC** to Go lottery-stats-server via generated stubs from `proto/lottery.proto`
-- **Chat sessions** — `app/sessions.py` indexes conversations in `agent.chat_sessions` (title, preview, timestamps) and reconstructs full history from the LangGraph checkpointer. Tier-based retention: free=1, paid=15, admin=unlimited; oldest sessions pruned automatically.
+- **Chat sessions** — `app/sessions.py` indexes conversations in `agent.chat_sessions` (title, preview, timestamps) and reconstructs full history from the LangGraph checkpointer. Tier-based retention: free=1, paid=15, admin=unlimited; oldest sessions pruned automatically. Sessions can be soft-archived via `POST /sessions/archive` (sets `archived_at`, deletes checkpointer state) — archived sessions disappear from the active list but remain for admin audit via `GET /sessions/archived`.
 - **UI context** — the supervisor accepts an optional structured `context` dict (page, selected numbers, groupSize, etc.) from the BFF `/chat` request, forwarded to workers for grounding.
 - **Shared prompts** — `app/prompts.py` centralizes domain-knowledge and language-rule constants used by all three worker subgraphs.
 - **Docs RAG ingestion** — `app/rag/ingest.py` loads markdown from `app/rag/docs_source/` into the `docs` corpus with content-hash dedup; triggered by `POST /reindex` (admin).
 - **Redis streaming** — `POST /chat/stream` publishes progress events to Redis channel `agent:stream:{thread_id}` and returns `{thread_id, channel}`; falls back to inline SSE when Redis is unavailable. SSE event names are `progress`, `paused`, `done`, `error`.
 - **Multi-request detection** — `app/graphs/supervisor.py` splits messages on EN/HE conjunctions; when multiple operations are detected it asks the user to pick one. Generate-then-save is exempted.
+- **Language-neutral message inheritance** — `app/normalizer.py` detects language-neutral messages (only digits/whitespace/punctuation, e.g. a bare "1" answering a clarification) and inherits the language from the prior conversation turn when available, so downstream prompts/responses stay consistent. Provenance is set to `"conversation"` when inherited, `"message"` otherwise.
 - **Domain registry** — `app/domain_registry.py` provides deterministic explanations for terms including the new `lucky_numbers` and `saved_numbers`.
 - **Tool error propagation** — `app/tools/__init__.py` defines `ToolError` for clean exception typing from tools.
 - **Admin command keyword map** — `app/rag/admin_commands.yaml` maps keyword phrases to admin tools (`read_token_usage`, `query_audit_log`, `search_web`, `list_db_tables`, `query_db`, etc.) for the `admin_ops` guard.
@@ -98,9 +99,9 @@ The DB must be running:
 
 ```bash
 docker compose -f docker-compose-dev.yml up -d db
-make test             # all tests (unit + integration) — 70 tests
-make test-unit        # unit tests only (no DB needed) — 34 tests
-make test-integration # integration tests only (needs DB) — 36 tests
+make test             # all tests (unit + integration)
+make test-unit        # unit tests only (no DB needed)
+make test-integration # integration tests only (needs DB)
 ```
 
 ### Key environment variables

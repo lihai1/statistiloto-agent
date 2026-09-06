@@ -279,6 +279,29 @@ def _detect_language(message: str) -> str:
     return "en"
 
 
+# A message is "language-neutral" when it contains no Hebrew characters AND no
+# Latin letters — i.e. only digits, whitespace, and punctuation. Such messages
+# (e.g. a bare "1" answering a clarification) carry no language signal, so the
+# normalizer may inherit the language from the prior conversation turn instead.
+LATIN_LETTER_RE = re.compile(r"[a-zA-Z]")
+
+
+def _is_language_neutral(message: str) -> bool:
+    """Return True when the message contains only digits/whitespace/punctuation.
+
+    A language-neutral message has neither Hebrew characters nor Latin letters,
+    so content-based language detection is meaningless. In that case the caller
+    may fall back to the conversation's last-request language.
+    """
+    if not message:
+        return True
+    if HEBREW_RE.search(message):
+        return False
+    if LATIN_LETTER_RE.search(message):
+        return False
+    return True
+
+
 def _extract_numbers(message: str) -> list[int]:
     """Extract all 1-2 digit numbers from the message."""
     return [int(n) for n in NUMBER_RE.findall(message) if 1 <= int(n) <= 99]
@@ -655,10 +678,22 @@ def normalize(
     # but content-derived language is authoritative.
     raw_message = message
 
+    # Language-neutral messages (only digits/whitespace/punctuation, e.g. a
+    # bare "1" answering a clarification) carry no language signal. Inherit the
+    # language from the prior conversation turn when available so downstream
+    # prompts/responses stay consistent with the ongoing conversation.
+    language_inherited = False
+    if _is_language_neutral(message) and conversation is not None and conversation.last_request is not None:
+        language = conversation.last_request.language
+        language_inherited = True
+
     request_kind, trivial_kind = _classify_request_kind(message, language)
     operation = _resolve_operation(request_kind)
 
-    provenance: dict[str, str] = {"language": "message", "request_kind": "message"}
+    provenance: dict[str, str] = {
+        "language": "conversation" if language_inherited else "message",
+        "request_kind": "message",
+    }
 
     # Extract common entities
     # Context numbers (from UI) are authoritative when present — message-extracted

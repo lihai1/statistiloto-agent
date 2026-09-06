@@ -76,10 +76,12 @@ class Pair(_message.Message):
     def __init__(self, numbers: _Optional[_Iterable[int]] = ..., count: _Optional[int] = ...) -> None: ...
 
 class GetStatisticsResponse(_message.Message):
-    __slots__ = ("pairs",)
+    __slots__ = ("pairs", "total_draws_in_range")
     PAIRS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_DRAWS_IN_RANGE_FIELD_NUMBER: _ClassVar[int]
     pairs: _containers.RepeatedCompositeFieldContainer[Pair]
-    def __init__(self, pairs: _Optional[_Iterable[_Union[Pair, _Mapping]]] = ...) -> None: ...
+    total_draws_in_range: int
+    def __init__(self, pairs: _Optional[_Iterable[_Union[Pair, _Mapping]]] = ..., total_draws_in_range: _Optional[int] = ...) -> None: ...
 
 class AnalyzeRequest(_message.Message):
     __slots__ = ("form", "window")
