@@ -19,6 +19,7 @@ from typing_extensions import TypedDict
 
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
+from app.llm.limiter import llm_invoke
 from app.metering import meter_llm
 from app.prompt_builder import build_prompt, format_run_data
 from app.graphs.common import (
@@ -89,7 +90,7 @@ def draft_analysis(state: AnalystState) -> dict:
         all_defs = get_tool_definitions()
         authorized_defs = [d for d in all_defs if d["name"] in cfg.allowed_tools]
         llm_with_tools = get_llm_with_tools(llm, authorized_defs)
-        resp = llm_with_tools.invoke(prompt)
+        resp = llm_invoke(llm_with_tools, prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
 
         # Try native parsing first (from AIMessage.tool_calls), fall back to text.
@@ -170,7 +171,7 @@ def finalize(state: AnalystState) -> dict:
                 run_data=run_data,
                 history=hist,
             )
-            resp = llm.invoke(prompt)
+            resp = llm_invoke(llm, prompt)
             response = resp.content if hasattr(resp, "content") else str(resp)
         except Exception as e:
             log.error("[analyst.finalize] LLM formatting failed: %s — using raw result", e)

@@ -13,6 +13,7 @@ from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 
 from app.llm.router import get_llm
+from app.llm.limiter import llm_invoke
 from app.metering import meter_llm
 from app.prompt_builder import build_prompt
 from app.graphs.common import format_history, append_history, make_retrieve_node
@@ -56,7 +57,7 @@ def generate_response(state: NLAssistantState) -> dict:
             knowledge=ctx,
             history=hist,
         )
-        resp = llm.invoke(prompt)
+        resp = llm_invoke(llm, prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
         updated_history = append_history(state, content)
         log.info("[nl_assistant.generate] SUCCESS user=%s session=%s response_len=%d", user_sub, session_id, len(content))
