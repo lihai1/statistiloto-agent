@@ -381,6 +381,9 @@ _NODE_LABELS = {
     "analyst": "Analyst",
     "admin_ops": "Admin operations",
     "supervisor": "Routing request",
+    "fetch": "Fetching draw data",
+    "insert": "Inserting new draws",
+    "prizes": "Backfilling prizes",
 }
 
 # Subgraph nodes whose LLM output is the user-facing answer. Token events

@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 
 _redis_client = None
 _redis_checked = False
+_sync_redis_client = None
+_sync_redis_checked = False
 
 STREAM_TTL_SECONDS = 3600
 STREAM_MAXLEN = 2000
@@ -78,6 +80,32 @@ def get_redis():
         log.warning("[redis_client] Failed to create Redis client: %s", e)
         _redis_client = None
     return _redis_client
+
+
+def get_sync_redis():
+    """Return a singleton synchronous ``redis.Redis`` client, or None."""
+    global _sync_redis_client, _sync_redis_checked
+    if _sync_redis_checked:
+        return _sync_redis_client
+    _sync_redis_checked = True
+
+    url = os.environ.get("REDIS_URL")
+    if not url:
+        return None
+
+    try:
+        import redis
+    except ImportError:
+        log.warning("[redis_client] redis package not installed")
+        return None
+
+    try:
+        _sync_redis_client = redis.from_url(url, decode_responses=True)
+        log.info("[redis_client] Sync Redis client created for %s", url)
+    except Exception as e:
+        log.warning("[redis_client] Failed to create sync Redis client: %s", e)
+        _sync_redis_client = None
+    return _sync_redis_client
 
 
 async def publish_event(key: str, event: dict) -> None:

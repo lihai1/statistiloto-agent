@@ -10,20 +10,108 @@ import json
 import logging
 import re
 import time
+import uuid
 
 from app.rag.store import get_pool
+from app.redis_client import get_sync_redis
 from app.security import TokenClaims, require_admin
 
 log = logging.getLogger(__name__)
 
 
 def trigger_scraper(claims: TokenClaims) -> dict:
-    """Trigger the Go lottery scraper (admin only)."""
+    """Trigger the Go lottery scraper via Redis queue (admin only)."""
     require_admin(claims)
-    # In production, this would call the Go service's scraper endpoint.
-    # For now, log the action to the audit log.
-    _audit(claims, "trigger_scraper", {})
-    return {"status": "scraper_triggered"}
+    r = get_sync_redis()
+    if r is None:
+        log.warning("[admin_ops.trigger_scraper] Redis client unavailable")
+        return {"status": "scraper_unavailable", "error": "redis_unavailable"}
+
+    request_id = uuid.uuid4().hex[:12]
+    now = int(time.time())
+    status_key = f"scraper:status:{request_id}"
+    events_key = f"scraper:events:{request_id}"
+
+    try:
+        r.xadd("scraper:requests", {
+            "request_id": request_id,
+            "requested_by": claims.sub,
+            "source": "agent",
+        }, maxlen=1000, approximate=True)
+
+        r.hset(status_key, mapping={
+            "request_id": request_id,
+            "status": "queued",
+            "phase": "queued",
+            "requested_by": claims.sub,
+            "updated_at": str(now),
+        })
+        r.expire(status_key, 86400)
+        r.set("scraper:latest", request_id)
+        _audit(claims, "trigger_scraper", {"request_id": request_id})
+    except Exception as e:
+        log.error("[admin_ops.trigger_scraper] Failed to enqueue request: %s", e)
+        return {"status": "scraper_failed", "error": str(e)}
+
+    # Stream writer to push progress events into SSE stream
+    writer = None
+    try:
+        from langgraph.config import get_stream_writer
+        writer = get_stream_writer()
+    except Exception:
+        pass
+
+    last_id = "0-0"
+    deadline = time.time() + 240
+
+    while time.time() < deadline:
+        try:
+            entries = r.xread({events_key: last_id}, block=5000, count=100)
+            if entries:
+                for _, msgs in entries:
+                    for msg_id, data in msgs:
+                        last_id = msg_id
+                        event = data.get("event")
+                        phase = data.get("phase")
+                        if writer and phase:
+                            try:
+                                writer({"event": "progress", "node": phase})
+                            except Exception:
+                                pass
+                        if event == "done":
+                            return {
+                                "status": "scraper_done",
+                                "inserted": int(data.get("inserted", 0)),
+                                "prizes_written": int(data.get("prizes_written", 0)),
+                            }
+                        elif event == "error":
+                            return {
+                                "status": "scraper_failed",
+                                "error": data.get("message", "Scraper execution failed"),
+                            }
+        except Exception as e:
+            log.warning("[admin_ops.trigger_scraper] XREAD warning: %s", e)
+
+        # Check status hash fallback on slice timeout
+        try:
+            st = r.hgetall(status_key)
+            if st:
+                status = st.get("status")
+                if status == "done":
+                    return {
+                        "status": "scraper_done",
+                        "inserted": int(st.get("inserted", 0)),
+                        "prizes_written": int(st.get("prizes_written", 0)),
+                    }
+                elif status in ("error", "interrupted"):
+                    return {
+                        "status": "scraper_failed",
+                        "error": st.get("error", "Scraper execution failed"),
+                    }
+        except Exception as e:
+            log.warning("[admin_ops.trigger_scraper] HGETALL warning: %s", e)
+
+    return {"status": "scraper_running", "request_id": request_id}
 
 
 def _keycloak_user_join_available(pool) -> bool:

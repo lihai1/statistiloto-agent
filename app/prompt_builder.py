@@ -116,7 +116,7 @@ FIELD_ALLOWLIST: dict[str, set[str]] = {
     "search_web": {"results", "count"},
     "list_saved_numbers": {"numbers", "error"},
     "save_numbers": {"status", "error"},
-    "trigger_scraper": {"status"},
+    "trigger_scraper": {"status", "inserted", "prizes_written", "error"},
 }
 
 ROW_LIMITS: dict[str, int] = {
