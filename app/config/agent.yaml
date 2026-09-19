@@ -6,7 +6,20 @@ llm:
   provider: ollama              # ollama | gemini  (admin can switch at runtime)
   ollama:
     base_url: "http://ollama:11434"
-    model: "qwen3:8b"            # better Hebrew + native tool calling than llama3.1:8b
+    model: "dicta-instruct-1.7b" # Hebrew-native DictaLM instruct — small + fast on CPU
+    # Trusted local models — pulled on startup if missing from the local Ollama.
+    # Keep this list in sync with the models admins may select via PUT /llm-config.
+    models:
+      - "dicta-instruct-1.7b:latest"
+      - "dicta-il/DictaLM-3.0-1.7B-Thinking:latest"
+      - "dicta-il/DictaLM-3.0-1.7B-Thinking:q4_k_m"
+      - "command-r7b:latest"
+      - "ornith-1.5:9b"
+      - "qwen3-vl:4b"
+      - "qwen3:8b"
+      - "qwen3:4b"
+      - "nomic-embed-text:latest"
+      - "qwen2.5:0.5b"
   gemini:
     api_key: ""
     model: "gemini-2.0-flash"

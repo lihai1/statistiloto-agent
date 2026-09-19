@@ -6,14 +6,14 @@
 
 - **Python 3.11–3.13** (3.12 recommended)
 - **FastAPI** — HTTP API server (uvicorn)
-- **LangGraph** — hierarchical multi-agent graph orchestration with PostgresSaver checkpointer
+- **LangGraph** — hierarchical multi-agent graph orchestration with AsyncPostgresSaver checkpointer
 - **LangChain** — LLM abstraction (Ollama + Google Gemini providers)
 - **pgvector** — vector similarity search for RAG (PostgreSQL extension)
 - **gRPC** — generated stubs from `proto/lottery.proto` for the Go lottery service
 - **Pydantic / pydantic-settings** — request/response models, config validation
 - **structlog** — structured logging
 - **SSE (sse-starlette)** — server-sent events for streaming chat responses
-- **Redis** — optional pub/sub backend for `/chat/stream` (falls back to inline SSE when unavailable)
+- **Redis** — optional Redis Streams backend for `/chat/stream` (replayable; falls back to inline SSE when unavailable)
 
 ## Architecture
 
@@ -61,8 +61,9 @@ The **supervisor graph** is the single choke point for tier gating. It routes by
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `POST` | `/chat` | any authenticated user | Process a chat message. Returns `{response, thread_id}` or `{paused: true, thread_id}` for HITL. |
-| `POST` | `/chat/stream` | any authenticated user | Stream chat events. Returns `{thread_id, channel}` for Redis subscription; falls back to inline SSE. Emits `progress`, `paused`, `done`, `error` events. |
+| `POST` | `/chat/stream` | any authenticated user | Stream chat events. `Accept: application/json` → `{thread_id, channel}` for Redis Streams replay; `Accept: text/event-stream` → inline SSE. Emits `progress`, `token`, `heartbeat`, `paused`, `done`, `error` events; exactly one terminal event per run. |
 | `POST` | `/approve` | any authenticated user | Resume a paused HITL thread with a human decision (`approved: bool`, optional `edited` value). |
+| `POST` | `/approve/stream` | any authenticated user | Same as `/approve` but streams the resumed run over the same event contract as `/chat/stream`. |
 | `GET` | `/healthz` | none | Health check — returns `{"status": "ok"}`. |
 | `GET` | `/sessions` | any authenticated user | List the caller's chat sessions (newest first) with the tier's session limit. |
 | `GET` | `/sessions/{session_id}` | any authenticated user | Load a session's full message history from the checkpointer. |
@@ -126,11 +127,10 @@ agent/
 │   ├── main.py                # FastAPI app — endpoints, graph singleton
 │   ├── security.py            # JWT validation (JWKS), tier extraction, admin guard
 │   ├── metering.py            # Token metering decorator + daily budget check
-│   ├── hitl.py                # Human-in-the-loop interrupt helpers
-│   ├── checkpointer.py        # PostgresSaver checkpointer management
-│   ├── prompts.py             # Shared LLM prompt constants (domain knowledge, language rules)
+│   ├── checkpointer.py        # AsyncPostgresSaver checkpointer management
+│   ├── prompt_builder.py      # Shared LLM prompt constants + builders (domain knowledge, language rules)
 │   ├── sessions.py            # Chat session history (list/load/delete/archive) + tier retention limits
-│   ├── redis_client.py        # Optional Redis pub/sub client for /chat/stream events
+│   ├── redis_client.py        # Optional Redis Streams client for /chat/stream events
 │   ├── renderer.py            # Zero-LLM deterministic response renderer
 │   ├── normalizer.py          # Request normalization + language detection (inherits language from prior turn for language-neutral messages)
 │   ├── domain_registry.py     # Canonical domain definitions (incl. lucky_numbers, saved_numbers)
@@ -166,15 +166,13 @@ agent/
     │   ├── test_normalizer_language.py
     │   ├── test_security.py
     │   └── test_supervisor.py
-    └── integration/           # 36 integration tests (real pgvector DB, mock LLM)
-        ├── conftest.py        # Mock LLM, embeddings, tool clients, test JWT
-        ├── test_free_user.py
-        ├── test_paid_user.py
-        ├── test_admin_user.py
-        ├── test_health.py
-        ├── test_llm_config.py
-        ├── test_metering.py
-        └── test_rag.py
+    ├── integration/           # Integration tests (real pgvector DB, mock LLM)
+    │   ├── conftest.py        # Mock LLM, embeddings, tool clients, test JWT
+    │   ├── test_chat_stream.py # SSE/stream contract: progress, token, paused, done, error
+    │   ├── test_chat_flows.py # Real-LLM flows (e2e_llm marker, needs Ollama)
+    │   └── ...                # free/paid/admin, sessions, metering, RAG, stream replay
+    ├── integration_real_llm/  # Real-LLM integration tests (needs Ollama running)
+    └── eval/                  # Deterministic routing/normalizer evaluation suite
 ```
 
 ## Quick Start
@@ -213,7 +211,8 @@ Settings are loaded from `app/config/agent.yaml` with environment variable overr
 | `LLM_PROVIDER` | `ollama` | LLM provider: `ollama` \| `gemini` \| `mock` |
 | `LLM_MOCK` | `false` | Set to `true` to use `FakeListChatModel` for tests |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama API URL |
-| `OLLAMA_MODEL` | `qwen3:8b` | Ollama model name (better Hebrew + tool calling; `gemma3:12b` is a higher-quality alternative) |
+| `OLLAMA_MODEL` | `dicta-instruct-1.7b` | Ollama model name (Hebrew-native DictaLM instruct — small + fast on CPU) |
+| `OLLAMA_MODELS` | _(list in agent.yaml)_ | Comma-separated trusted local models — missing ones are pulled on startup |
 | `GEMINI_API_KEY` | _(empty)_ | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model name |
 | `DB_URI` | `postgresql://postgres:postgres@db:5432/statistiloto` | PostgreSQL connection string |
@@ -224,7 +223,8 @@ Settings are loaded from `app/config/agent.yaml` with environment variable overr
 | `LOTTERY_GRPC_HOST` | `lottery` | Go lottery service host (empty = tools return empty) |
 | `LOTTERY_GRPC_PORT` | `9090` | Go lottery service gRPC port |
 | `BFF_BASE_URL` | `http://server:8082` | Java BFF base URL (empty = saved_numbers tools return empty) |
-| `REDIS_URL` | _(empty)_ | Optional Redis URL (e.g. `redis://localhost:6379`). If unset, `/chat/stream` falls back to inline SSE. |
+| `REDIS_URL` | _(empty)_ | Optional Redis URL (e.g. `redis://localhost:6379`). Enables Redis Streams relay for `/chat/stream`; if unset, falls back to inline SSE. |
+| `ALLOWED_ISSUERS` | _(empty)_ | Comma-separated list of trusted JWT `iss` values. When set, tokens from other issuers are rejected (signature + audience are always verified). |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | `300` | LLM request timeout in seconds |
 | `AGENT_LOG_LEVEL` | `INFO` | Logging level |
 

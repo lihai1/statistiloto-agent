@@ -13,10 +13,10 @@ from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 
 from app.llm.router import get_llm
-from app.llm.limiter import llm_invoke
+from app.llm.limiter import llm_stream_invoke
 from app.metering import meter_llm
 from app.prompt_builder import build_prompt
-from app.graphs.common import format_history, append_history, make_retrieve_node
+from app.graphs.common import format_history, append_history, make_retrieve_node, emit_step
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ retrieve_docs = make_retrieve_node("nl_assistant")
 @meter_llm
 def generate_response(state: NLAssistantState) -> dict:
     """Generate a response using the global LLM with retrieved context + conversation history."""
+    emit_step("generate")
     user_sub = state["user_sub"]
     session_id = state["session_id"]
     hist_len = len(state.get("history", []))
@@ -57,7 +58,8 @@ def generate_response(state: NLAssistantState) -> dict:
             knowledge=ctx,
             history=hist,
         )
-        resp = llm_invoke(llm, prompt)
+        # .stream() so /chat/stream emits token events for this node.
+        resp = llm_stream_invoke(llm, prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
         updated_history = append_history(state, content)
         log.info("[nl_assistant.generate] SUCCESS user=%s session=%s response_len=%d", user_sub, session_id, len(content))

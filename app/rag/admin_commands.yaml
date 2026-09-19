@@ -24,15 +24,15 @@ commands:
     args: {query: "", limit: 5}
     description: "Search the web"
     dynamic_args:
-      query: "tool_args.get('query', state['message'].strip())"
-      limit: "tool_args.get('limit', 5)"
+      query: {from: query, or: message}
+      limit: {from: limit, default: 5}
 
   - keywords: ["tables in", "schema", "what tables"]
     tool: list_db_tables
     args: {schema: "agent"}
     description: "List database tables in a schema"
     dynamic_args:
-      schema: "tool_args.get('schema', 'agent')"
+      schema: {from: schema, default: "agent"}
 
   - keywords: ["show me the users", "who is using", "list users", "show users", "all users"]
     tool: query_db
@@ -41,7 +41,7 @@ commands:
       limit: 50
     description: "List users from token usage"
     dynamic_args:
-      limit: "tool_args.get('limit', 50)"
+      limit: {from: limit, default: 50}
 
   - keywords: ["chat sessions", "show sessions", "list sessions", "active sessions"]
     tool: query_db
@@ -50,4 +50,4 @@ commands:
       limit: 50
     description: "List chat sessions"
     dynamic_args:
-      limit: "tool_args.get('limit', 50)"
+      limit: {from: limit, default: 50}

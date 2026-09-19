@@ -14,7 +14,18 @@ class TestSettings:
         reload_settings()
         s = get_settings()
         assert s.llm.provider == "ollama"
-        assert s.llm.ollama.model == "qwen3:8b"
+        assert s.llm.ollama.model == "dicta-instruct-1.7b"
+        # Trusted local models list — pulled on startup if missing.
+        assert "dicta-instruct-1.7b:latest" in s.llm.ollama.models
+        assert "nomic-embed-text:latest" in s.llm.ollama.models
+
+    def test_ollama_models_env_override(self):
+        os.environ["OLLAMA_MODELS"] = "a:1b, b:2b"
+        reload_settings()
+        s = get_settings()
+        assert s.llm.ollama.models == ["a:1b", "b:2b"]
+        del os.environ["OLLAMA_MODELS"]
+        reload_settings()
 
     def test_env_overrides(self):
         os.environ["LLM_PROVIDER"] = "gemini"

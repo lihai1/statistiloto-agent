@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 from app.rag.store import get_pool
@@ -150,6 +151,15 @@ _FORBIDDEN_KEYWORDS = frozenset({
     "create", "grant", "revoke", "vacuum", "copy", "merge",
 })
 
+# Functions with side effects or abuse potential — allowed by SELECT-only
+# keyword checks but can still write state or stall the pool.
+_FORBIDDEN_FUNCTIONS_RE = re.compile(
+    r"\b(pg_sleep|set_config|nextval|setval|currval|pg_advisory_\w+|"
+    r"dblink\w*|pg_terminate_backend|pg_cancel_backend|lo_\w+|"
+    r"pg_notification_queue_usage|pg_notify|txid_\w*|pg_export_snapshot)\s*\(",
+    re.IGNORECASE,
+)
+
 
 def _validate_readonly_sql(sql: str) -> None:
     """Raise ValueError if the SQL is not a read-only SELECT statement."""
@@ -158,11 +168,12 @@ def _validate_readonly_sql(sql: str) -> None:
         raise ValueError("Only SELECT or WITH (CTE) queries are allowed.")
     # Check for forbidden keywords as whole words (not inside strings/identifiers).
     # Simple heuristic: tokenize on whitespace and check.
-    import re
     tokens = re.findall(r"\b\w+\b", stripped)
     for token in tokens:
         if token in _FORBIDDEN_KEYWORDS:
             raise ValueError(f"Keyword '{token}' is not allowed in read-only queries.")
+    if _FORBIDDEN_FUNCTIONS_RE.search(stripped):
+        raise ValueError("Query contains a function with side effects; not allowed.")
 
 
 def list_db_tables(claims: TokenClaims, schema: str = "agent") -> list[dict]:
@@ -211,10 +222,17 @@ def query_db(claims: TokenClaims, sql: str, limit: int = 50) -> list[dict]:
     _audit(claims, "query_db", {"sql": sql[:200], "limit": limit})
     pool = get_pool()
     with pool.connection() as conn:
-        # Wrap in a subquery to enforce the LIMIT safely.
-        rows = conn.execute(f"SELECT * FROM ({sql.rstrip(';')}) AS _q LIMIT %s", (limit,))
-        col_names = [desc[0] for desc in rows.description]
-        result = []
-        for row in rows.fetchall():
-            result.append(dict(zip(col_names, row)))
+        # Defense-in-depth: READ ONLY transaction + statement timeout so a
+        # side-effect function or runaway query can't write state or stall.
+        conn.execute("BEGIN READ ONLY")
+        try:
+            conn.execute("SET LOCAL statement_timeout = '10s'")
+            # Wrap in a subquery to enforce the LIMIT safely.
+            rows = conn.execute(f"SELECT * FROM ({sql.rstrip(';')}) AS _q LIMIT %s", (limit,))
+            col_names = [desc[0] for desc in rows.description]
+            result = []
+            for row in rows.fetchall():
+                result.append(dict(zip(col_names, row)))
+        finally:
+            conn.execute("ROLLBACK")
     return result

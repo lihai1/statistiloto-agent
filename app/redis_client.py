@@ -1,7 +1,18 @@
-"""Redis client singleton for pub/sub streaming progress.
+"""Redis client singleton for Streams-based streaming progress.
 
 Provides a lazily-created ``redis.asyncio.Redis`` client used by the
-``/chat/stream`` endpoint to publish incremental progress events.
+``/chat/stream`` endpoint to publish incremental progress events to a
+Redis Stream (``agent:stream:{thread_id}:{run_id}``).
+
+Each run gets its own stream key: a thread (session) can produce many
+runs — the first message, every follow-up message, and each HITL resume
+— and a replay of a previous run's events would surface stale terminal
+events (``done``/``paused``) to the relay before the new run's events.
+
+Streams are replayable — unlike pub/sub, a subscriber that connects late
+(or after the run already finished on a fast deterministic path) can read
+the full event history with ``XRANGE``/``XREAD`` from ``0-0``. Keys expire
+after one hour.
 
 The client is optional — if the ``redis`` package is not installed or
 ``REDIS_URL`` is not set, all helpers degrade to no-ops (returning None /
@@ -13,12 +24,26 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 _redis_client = None
 _redis_checked = False
+
+STREAM_TTL_SECONDS = 3600
+STREAM_MAXLEN = 2000
+
+
+def stream_key(thread_id: str) -> str:
+    """Return a fresh Redis Stream key for one run's events.
+
+    A unique run suffix isolates each run's stream: replaying with
+    ``XREAD`` from ``0-0`` then yields only this run's events, never a
+    previous run's terminal ``done``/``paused``.
+    """
+    return f"agent:stream:{thread_id}:{uuid.uuid4().hex[:12]}"
 
 
 def get_redis():
@@ -55,9 +80,10 @@ def get_redis():
     return _redis_client
 
 
-async def publish_event(channel: str, event: dict) -> None:
-    """JSON-serialize and publish *event* to *channel*.
+async def publish_event(key: str, event: dict) -> None:
+    """JSON-serialize and append *event* to the Redis Stream *key*.
 
+    Uses XADD with MAXLEN ~2000 (approximate) and refreshes the key TTL.
     Silently fails (logs a warning) when Redis is unavailable so callers
     never need to handle Redis errors.
     """
@@ -66,9 +92,10 @@ async def publish_event(channel: str, event: dict) -> None:
         return
     try:
         payload = json.dumps(event, default=str)
-        await client.publish(channel, payload)
+        await client.xadd(key, {"data": payload}, maxlen=STREAM_MAXLEN, approximate=True)
+        await client.expire(key, STREAM_TTL_SECONDS)
     except Exception as e:
-        log.warning("[redis_client] Failed to publish to %s: %s", channel, e)
+        log.warning("[redis_client] Failed to XADD to %s: %s", key, e)
 
 
 async def is_redis_available() -> bool:
@@ -89,7 +116,12 @@ def reset_redis_client() -> None:
     if _redis_client is not None:
         try:
             import asyncio
-            asyncio.get_event_loop().create_task(_redis_client.aclose())
+            asyncio.get_running_loop().create_task(_redis_client.aclose())
+        except RuntimeError:
+            try:
+                asyncio.run(_redis_client.aclose())
+            except Exception:
+                pass
         except Exception:
             pass
     _redis_client = None

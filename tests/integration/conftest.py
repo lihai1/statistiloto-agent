@@ -43,7 +43,9 @@ from app.main import app, set_graph, reset_graph
 
 # ── DB fixtures ──────────────────────────────────────────────
 
-DB_URI = "postgresql://statistiloto:change-me-in-prod@db:5432/statistiloto"
+DB_URI = os.environ.get(
+    "DB_URI", "postgresql://statistiloto:change-me-in-prod@db:5432/statistiloto"
+)
 
 
 @pytest.fixture(scope="session")
@@ -192,12 +194,13 @@ def mock_llm_store(request, db_pool):
 
 @pytest.fixture(scope="session")
 def session_checkpointer(db_pool):
-    """Session-scoped PostgresSaver — created once, reused across all tests.
+    """Session-scoped SYNC PostgresSaver for direct-graph tests only.
 
-    Creating a PostgresSaver per-test was the dominant cost (~20s teardown
-    each) because from_conn_string() opens a new connection pool and
-    __exit__() closes it. Sharing one instance across the session eliminates
-    that overhead.
+    The app endpoints use async graph APIs (ainvoke/astream/aget_state),
+    which require AsyncPostgresSaver — created lazily by the app's own
+    get_checkpointer() on the TestClient portal loop. This sync saver is
+    only for tests that call graph.invoke()/get_state() directly
+    (test_chat_flows), bypassing the HTTP app.
     """
     from langgraph.checkpoint.postgres import PostgresSaver
     cm = PostgresSaver.from_conn_string(DB_URI)
@@ -211,10 +214,13 @@ def session_checkpointer(db_pool):
 
 
 @pytest.fixture(autouse=True, scope="function")
-def test_checkpointer(session_checkpointer, db_pool):
-    """Reuse the session-scoped checkpointer; clear checkpoint tables between
-    tests so HITL state doesn't leak across test boundaries."""
-    # Clean checkpoint tables so each test starts fresh.
+def test_checkpointer(db_pool):
+    """Clear checkpoint tables between tests so HITL state doesn't leak.
+
+    Injects ``None`` so the app lazily creates an AsyncPostgresSaver on the
+    TestClient portal loop on first request (async savers are loop-bound,
+    so one cannot be built in the sync fixture and shared into the app).
+    """
     # Table names vary across langgraph versions, so check existence first.
     with db_pool.connection() as conn:
         rows = conn.execute(
@@ -223,8 +229,8 @@ def test_checkpointer(session_checkpointer, db_pool):
         ).fetchall()
         for (table_name,) in rows:
             conn.execute(f'DELETE FROM "{table_name}"')
-    set_checkpointer(session_checkpointer)
-    yield session_checkpointer
+    set_checkpointer(None)
+    yield
     set_checkpointer(None)
 
 
@@ -304,8 +310,14 @@ def reset_app_graph():
 @pytest.fixture(autouse=True, scope="function")
 def mock_tool_clients():
     """Inject mock lottery gRPC and saved_numbers clients so tools don't
-    try to connect to real Go/Java services during integration tests."""
+    try to connect to real Go/Java services during integration tests.
+
+    Also clears the TTL tool cache — otherwise a result cached by one test
+    would be served to the next without invoking its (tracked) mock.
+    """
     from app.tools import lottery_grpc, saved_numbers
+
+    lottery_grpc.invalidate_tool_cache()
 
     lottery_grpc.set_mock_client({
         "generate_form": lambda **kw: {"forms": [{"numbers": [1, 2, 3, 4, 5, 6], "strong": 7}]},

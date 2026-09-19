@@ -189,6 +189,41 @@ class TestLLMConfig:
         assert cfg.provider == "mock"
         assert cfg.model == "new-mock-model"
 
+    def test_api_key_is_masked_on_read(self, client, admin_headers):
+        """GET /llm-config + /llm-configs must never expose the stored key."""
+        client.put(
+            "/llm-config",
+            json={"provider": "ollama", "model": "masked-test",
+                  "base_url": "http://ollama:11434", "apiKey": "secret-key-123"},
+            headers=admin_headers,
+        )
+        data = client.get("/llm-config", headers=admin_headers).json()
+        assert data["api_key"] != "secret-key-123"
+        assert data["api_key_set"] is True
+        configs = client.get("/llm-configs", headers=admin_headers).json()["configs"]
+        assert all(c["api_key"] != "secret-key-123" for c in configs)
+
+    def test_masked_api_key_is_preserved_on_update(self, client, admin_headers, db_pool):
+        """Echoing the mask back on update keeps the stored key."""
+        client.put(
+            "/llm-config",
+            json={"provider": "ollama", "model": "masked-test",
+                  "base_url": "http://ollama:11434", "apiKey": "secret-key-456"},
+            headers=admin_headers,
+        )
+        # Re-save with the mask — the stored key must survive.
+        client.put(
+            "/llm-config",
+            json={"provider": "ollama", "model": "masked-test",
+                  "base_url": "http://ollama:11434", "apiKey": "********"},
+            headers=admin_headers,
+        )
+        with db_pool.connection() as conn:
+            row = conn.execute(
+                "SELECT api_key FROM agent.llm_config WHERE is_active = TRUE LIMIT 1"
+            ).fetchone()
+        assert row[0] == "secret-key-456"
+
 
 class TestAdminAuditLog:
     def test_audit_log_written_for_admin_actions(self, client, admin_headers, db_pool):

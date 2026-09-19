@@ -40,11 +40,32 @@ def _chat(client, headers, session_id, message, intent=None, context=None):
     return resp.json()
 
 
+_DIRECT_GRAPH = None
+
+
+@pytest.fixture(autouse=True)
+def _direct_graph(session_checkpointer):
+    """Build a dedicated graph on the SYNC session checkpointer.
+
+    Direct-graph tests call graph.invoke()/get_state() synchronously, so
+    they need a sync PostgresSaver — the app's own graph uses the async
+    saver created on the TestClient portal loop and can't be invoked sync.
+    """
+    global _DIRECT_GRAPH
+    from app.graphs.supervisor import build_supervisor_graph
+    _DIRECT_GRAPH = build_supervisor_graph(checkpointer=session_checkpointer)
+    yield
+    _DIRECT_GRAPH = None
+
+
 def _invoke_graph(state, config):
     """Invoke the supervisor graph and return the full result state."""
-    from app.main import get_graph
-    graph = get_graph()
-    return graph.invoke(state, config)
+    return _DIRECT_GRAPH.invoke(state, config)
+
+
+def _get_graph():
+    """Return the sync-saver graph for direct state inspection."""
+    return _DIRECT_GRAPH
 
 
 def _make_state(user_sub, tier, session_id, message, intent=None, context=None, jwt_token="", history=None):
@@ -206,8 +227,7 @@ class TestFreeUserFlow:
         assert result1.get("response"), "Turn 1 should produce a response"
 
         # Turn 2 — same session (thread_id), should load history from checkpointer
-        from app.main import get_graph
-        graph = get_graph()
+        graph = _get_graph()
         prev_state = graph.get_state(config)
         history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
 
@@ -298,13 +318,11 @@ class TestPaidUserFlow:
     def test_save_numbers_hitl_flow(self):
         """Save numbers should trigger HITL, then resume with approval."""
         from langgraph.types import Command
-        from app.main import get_graph
-
         state = _make_state("paid-user-001", "paid", "e2e-paid-4",
                             "Save the numbers 1, 2, 3, 4, 5, 6 as my lucky pick",
                             intent="analyst")
         config = _make_config("paid-user-001", "e2e-paid-4", recursion_limit=25)
-        graph = get_graph()
+        graph = _get_graph()
 
         # First invoke — should pause for HITL (save_numbers is a write tool)
         result = graph.invoke(state, config)
@@ -344,8 +362,6 @@ class TestPaidUserFlow:
     @pytest.mark.timeout(_TIMEOUT * 3)
     def test_multi_turn_tool_flow(self):
         """Multi-turn: two statistics requests in the same session."""
-        from app.main import get_graph
-
         # Turn 1: hot pairs
         state1 = _make_state("paid-user-001", "paid", "e2e-paid-6",
                              "Show me hot pairs", intent="analyst")
@@ -354,7 +370,7 @@ class TestPaidUserFlow:
         assert result1.get("response"), "Turn 1 should produce a response"
 
         # Turn 2: cold triples — should load history
-        graph = get_graph()
+        graph = _get_graph()
         prev_state = graph.get_state(config)
         history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
 
@@ -438,12 +454,10 @@ class TestAdminUserFlow:
     def test_edit_file_hitl(self):
         """Edit file request should trigger HITL (write tool)."""
         from langgraph.types import Command
-        from app.main import get_graph
-
         state = _make_state("admin-user-001", "admin", "e2e-admin-3",
                             "Edit the file app/main.py", intent="admin_ops")
         config = _make_config("admin-user-001", "e2e-admin-3", recursion_limit=50)
-        graph = get_graph()
+        graph = _get_graph()
 
         result = graph.invoke(state, config)
 
@@ -489,8 +503,6 @@ class TestCrossTierFlow:
     @pytest.mark.timeout(_TIMEOUT * 3)
     def test_session_isolation(self):
         """Same session_id, different users — no cross-contamination."""
-        from app.main import get_graph
-
         # Paid user turn 1
         state1 = _make_state("paid-user-001", "paid", "e2e-shared-1",
                              "My favorite number is 42", intent="analyst")

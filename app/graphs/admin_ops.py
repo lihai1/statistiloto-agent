@@ -21,12 +21,10 @@ from typing_extensions import TypedDict
 
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
-from app.llm.limiter import llm_invoke
+from app.llm.limiter import llm_invoke, llm_stream_invoke
 from app.metering import meter_llm
 from app.prompt_builder import build_prompt, format_run_data
-from app.security import TokenClaims
-from app.tools import admin_ops, online_search, code_editor
-from app.graphs.common import format_history, append_history, make_retrieve_node, make_hitl_gate
+from app.graphs.common import format_history, append_history, make_retrieve_node, make_hitl_gate, emit_step
 from app.graphs.tool_parser import parse_tool_call
 
 log = logging.getLogger(__name__)
@@ -55,11 +53,48 @@ def load_admin_commands() -> list[dict]:
         with open(yaml_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         commands = data.get("commands", [])
+        for cmd in commands:
+            _validate_dynamic_args(cmd.get("dynamic_args", {}), cmd.get("tool", "?"))
         log.debug("[admin_ops] Loaded %d admin commands from %s", len(commands), yaml_path)
         return commands
     except Exception as e:
         log.warning("[admin_ops] Failed to load admin_commands.yaml: %s — using empty list", e)
         return []
+
+
+def _validate_dynamic_args(dynamic: dict, tool: str) -> None:
+    """Fail fast on malformed dynamic_args specs (replaces the old eval())."""
+    if not isinstance(dynamic, dict):
+        raise ValueError(f"admin_commands[{tool}]: dynamic_args must be a mapping")
+    for arg_name, spec in dynamic.items():
+        if not isinstance(spec, dict) or "from" not in spec:
+            raise ValueError(
+                f"admin_commands[{tool}].dynamic_args.{arg_name}: "
+                "expected {from: <tool_arg>, default: <value>} or {from: <tool_arg>, or: message}"
+            )
+        if "default" not in spec and spec.get("or") != "message":
+            raise ValueError(
+                f"admin_commands[{tool}].dynamic_args.{arg_name}: "
+                "needs a 'default' literal or 'or: message'"
+            )
+
+
+def _resolve_dynamic_args(dynamic: dict, tool_args: dict, state: dict) -> dict:
+    """Resolve dynamic_args specs to concrete values (no eval).
+
+    Spec: {arg_name: {from: <tool_args key>, default: <literal>}}
+       or {arg_name: {from: <tool_args key>, or: message}}  # user's raw message
+    """
+    resolved = {}
+    for arg_name, spec in (dynamic or {}).items():
+        try:
+            value = tool_args.get(spec["from"])
+            if value is None:
+                value = state["message"].strip() if spec.get("or") == "message" else spec.get("default")
+            resolved[arg_name] = value
+        except Exception:
+            continue  # keep YAML default if resolution fails
+    return resolved
 
 
 class AdminOpsState(TypedDict):
@@ -105,6 +140,7 @@ def plan_action(state: AdminOpsState) -> dict:
     The LLM responds with:
       TOOL: <tool_name> ARGS: <json_args>
     """
+    emit_step("plan")
     user_sub = state["user_sub"]
     session_id = state["session_id"]
     hist_len = len(state.get("history", []))
@@ -168,12 +204,7 @@ def plan_action(state: AdminOpsState) -> dict:
                 tool_name = cmd["tool"]
                 # Start with default args, then apply dynamic args.
                 args = dict(cmd.get("args", {}))
-                dynamic = cmd.get("dynamic_args", {})
-                for arg_name, expr in dynamic.items():
-                    try:
-                        args[arg_name] = eval(expr, {}, {"tool_args": tool_args, "state": state})
-                    except Exception:
-                        pass  # keep default if dynamic eval fails
+                args.update(_resolve_dynamic_args(cmd.get("dynamic_args", {}), tool_args, state))
                 expected = (tool_name, args)
                 break
 
@@ -224,73 +255,28 @@ maybe_hitl = make_hitl_gate("admin_ops", execute_node="execute", finalize_node="
 
 def execute(state: AdminOpsState) -> dict:
     """Execute the planned admin action and append the exchange to conversation history."""
+    emit_step("execute")
     planned_tool = state.get("planned_tool")
     tool_args = state.get("tool_args", {})
     user_sub = state["user_sub"]
     session_id = state["session_id"]
-    claims = TokenClaims(
-        sub=user_sub,
-        tier=state["tier"],
-        roles=[],
-        raw_token=state.get("jwt_token", ""),
-    )
+
+    if not planned_tool or planned_tool == "none":
+        return {"tool_result": {"status": "no_action", "message": "No admin action needed."}}
 
     log.info("[admin_ops.execute] START user=%s session=%s tool=%s args=%s", user_sub, session_id, planned_tool, tool_args)
+    from app.tool_executor import execute_tool as _execute
     try:
-        if not planned_tool or planned_tool == "none":
-            result = {"status": "no_action", "message": "No admin action needed."}
-        elif planned_tool == "trigger_scraper":
-            result = admin_ops.trigger_scraper(claims)
-            # New draw data arrived — invalidate cached statistics/analysis.
-            from app.tools.lottery_grpc import invalidate_tool_cache
-            invalidate_tool_cache()
-        elif planned_tool == "query_audit_log":
-            result = admin_ops.query_audit_log(claims, limit=tool_args.get("limit", 50))
-        elif planned_tool == "read_token_usage":
-            result = admin_ops.read_token_usage(claims, days=tool_args.get("days", 7))
-        elif planned_tool == "save_numbers":
-            from app.tools.saved_numbers import save_numbers
-            result = save_numbers(
-                user_sub=user_sub,
-                jwt_token=state.get("jwt_token", ""),
-                category=tool_args.get("category", "default"),
-                numbers=tool_args.get("numbers", []),
-                will_be=tool_args.get("will_be"),
-            )
-        elif planned_tool == "search_web":
-            result = online_search.search_web(
-                query=tool_args.get("query", ""),
-                limit=tool_args.get("limit", 5),
-            )
-        elif planned_tool == "read_code":
-            result = code_editor.read_code(file_path=tool_args.get("file_path", ""))
-        elif planned_tool == "list_files":
-            result = code_editor.list_files(directory=tool_args.get("directory"))
-        elif planned_tool == "edit_file":
-            result = code_editor.edit_file(
-                file_path=tool_args.get("file_path", ""),
-                old_string=tool_args.get("old_string"),
-                new_string=tool_args.get("new_string"),
-                content=tool_args.get("content"),
-            )
-        elif planned_tool == "list_db_tables":
-            result = admin_ops.list_db_tables(
-                claims, schema=tool_args.get("schema", "agent"),
-            )
-        elif planned_tool == "query_db":
-            result = admin_ops.query_db(
-                claims,
-                sql=tool_args.get("sql", ""),
-                limit=tool_args.get("limit", 50),
-            )
-        else:
-            result = {"status": "unknown_action", "message": f"Unknown tool: {planned_tool}"}
-
+        # Single dispatcher: JWT re-authorization + full tool coverage.
+        result = _execute(planned_tool, tool_args, state.get("jwt_token", ""))
         log.info("[admin_ops.execute] SUCCESS user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
         return {"tool_result": result}
+    except PermissionError as e:
+        log.warning("[admin_ops.execute] DENIED user=%s session=%s tool=%s: %s", user_sub, session_id, planned_tool, e)
+        return {"tool_result": {"error": str(e), "tool": planned_tool, "denied": True}}
     except Exception as e:
         log.error("[admin_ops.execute] ERROR user=%s session=%s tool=%s msg=%s", user_sub, session_id, planned_tool, e, exc_info=True)
-        raise
+        return {"tool_result": {"error": str(e), "tool": planned_tool}}
 
 
 @meter_llm
@@ -301,6 +287,7 @@ def finalize(state: AdminOpsState) -> dict:
     tool result into concise NL per the system prompt's grounding rules.
     Falls back to a plain summary if the LLM call fails.
     """
+    emit_step("finalize")
     user_sub = state["user_sub"]
     session_id = state["session_id"]
     tool_result = state.get("tool_result")
@@ -334,7 +321,8 @@ def finalize(state: AdminOpsState) -> dict:
             run_data=run_data,
             history=hist,
         )
-        resp = llm_invoke(llm, prompt)
+        # .stream() so /chat/stream emits token events for this node.
+        resp = llm_stream_invoke(llm, prompt)
         response = resp.content if hasattr(resp, "content") else str(resp)
     except Exception as e:
         log.error("[admin_ops.finalize] LLM formatting failed: %s — using summary", e)

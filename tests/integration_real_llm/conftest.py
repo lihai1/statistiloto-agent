@@ -66,25 +66,29 @@ def real_llm_store(db_pool):
 
 
 @pytest.fixture(autouse=True, scope="function")
-def real_checkpointer():
-    """Use PostgresSaver with the real DB for durable HITL."""
-    from langgraph.checkpoint.postgres import PostgresSaver
-    from app.checkpointer import set_checkpointer, reset_checkpointer
+def real_checkpointer(db_pool):
+    """Use durable checkpointer with the real DB for HITL.
+
+    The app endpoints use async graph APIs requiring AsyncPostgresSaver —
+    created lazily by get_checkpointer() on the TestClient portal loop.
+    Inject None so the app builds its own; clean checkpoint tables so
+    HITL state doesn't leak across tests.
+    """
+    from app.checkpointer import set_checkpointer
     from app.main import reset_graph
 
-    cm = PostgresSaver.from_conn_string(DB_URI)
-    cp = cm.__enter__()
-    cp.setup()
-    set_checkpointer(cp)
-    reset_graph()
-    yield cp
+    with db_pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name LIKE 'checkpoint%'"
+        ).fetchall()
+        for (table_name,) in rows:
+            conn.execute(f'DELETE FROM "{table_name}"')
     set_checkpointer(None)
-    reset_checkpointer()
     reset_graph()
-    try:
-        cm.__exit__(None, None, None)
-    except Exception:
-        pass
+    yield
+    set_checkpointer(None)
+    reset_graph()
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -111,6 +115,7 @@ def mock_tool_clients():
     the agent discussion flow from the Go/Java services."""
     from app.tools import lottery_grpc, saved_numbers
 
+    lottery_grpc.invalidate_tool_cache()
     lottery_grpc.set_mock_client({
         "generate_form": lambda **kw: {"forms": [[1, 2, 3, 4, 5, 6]]},
         "get_statistics": lambda **kw: {

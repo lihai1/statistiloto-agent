@@ -19,16 +19,17 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.config.settings import get_settings
-from app.llm.config_store import get_llm_store, set_llm_store, LLMConfigStore, LLMConfig, build_llm
+from app.llm.config_store import get_llm_store, set_llm_store, LLMConfigStore, LLMConfig, build_llm, MASKED_API_KEY, mask_api_key
 from app.llm.router import set_llm_override, reset_llm_override
 from app.security import (
     TokenClaims,
@@ -77,33 +78,30 @@ class FreeLlmToggleRequest(BaseModel):
 # ── Graph singleton (built lazily) ───────────────────────────
 
 _graph = None
+_graph_lock = asyncio.Lock()
 
 
-def get_graph():
-    """Get or build the supervisor graph with PostgresSaver checkpointer.
+async def get_graph():
+    """Get or build the supervisor graph with AsyncPostgresSaver checkpointer.
 
-    If the checkpointer's connection was closed and recreated, the graph
+    If the checkpointer instance changed (e.g. test injection), the graph
     is rebuilt with the new checkpointer instance.
     """
     global _graph
     from app.checkpointer import get_checkpointer
 
-    # get_checkpointer() may recreate the checkpointer if the connection
-    # was closed. We need to rebuild the graph in that case.
-    checkpointer = get_checkpointer()
-    if _graph is not None:
-        # Check if the checkpointer was recreated (different instance)
-        current_cp = getattr(_graph, "checkpointer", None)
-        if current_cp is not checkpointer:
-            log.info("Checkpointer changed — rebuilding supervisor graph")
-            _graph = None
-        else:
-            return _graph
+    checkpointer = await get_checkpointer()
+    if _graph is not None and getattr(_graph, "checkpointer", None) is checkpointer:
+        return _graph
 
-    from app.graphs.supervisor import build_supervisor_graph
-    _graph = build_supervisor_graph(checkpointer=checkpointer)
-    log.info("Supervisor graph compiled with PostgresSaver checkpointer")
-    return _graph
+    async with _graph_lock:
+        checkpointer = await get_checkpointer()
+        if _graph is not None and getattr(_graph, "checkpointer", None) is checkpointer:
+            return _graph
+        from app.graphs.supervisor import build_supervisor_graph
+        _graph = build_supervisor_graph(checkpointer=checkpointer)
+        log.info("Supervisor graph compiled with AsyncPostgresSaver checkpointer")
+        return _graph
 
 
 def set_graph(graph):
@@ -129,6 +127,14 @@ async def startup():
     store.start_poller()
     log.info("Agent service started (LLM provider=%s model=%s)",
              store.get_config().provider, store.get_config().model)
+
+    # Ensure trusted local Ollama models exist (pull missing ones in the
+    # background — pulls can be GBs and must not block startup).
+    if s.llm.provider == "ollama" and s.llm.ollama.models:
+        import asyncio
+        from app.llm.model_pull import ensure_ollama_models
+        asyncio.create_task(ensure_ollama_models(
+            s.llm.ollama.base_url, s.llm.ollama.models))
 
     # Auto-ingest RAG corpora (docs + examples) on startup.
     # Runs in a background thread so the HTTP server starts immediately.
@@ -164,6 +170,15 @@ async def _run_startup_ingestion():
 async def shutdown():
     store = get_llm_store()
     store.stop_poller()
+    # Drain in-flight stream tasks — publish an error so subscribers
+    # see a terminal event instead of a silently dropped connection.
+    tasks = list(_stream_tasks)
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    from app.checkpointer import close_checkpointer
+    await close_checkpointer()
     log.info("Agent service stopped")
 
 
@@ -200,17 +215,27 @@ def _read_llm_config_by_id(config_id: int) -> LLMConfig | None:
     return None
 
 
+def _enforce_budget(claims: TokenClaims) -> str | None:
+    """Return a deterministic over-budget message, or None when within budget.
+
+    Checked before ANY graph execution so an over-budget user costs zero
+    LLM calls. Fails open (returns None) when the DB check itself errors.
+    """
+    from app.metering import check_daily_budget
+    if not check_daily_budget(claims.sub, claims.tier):
+        log.warning("[budget] DENIED user=%s tier=%s — daily budget exceeded", claims.sub, claims.tier)
+        return "You've reached your daily usage limit. Please try again tomorrow or contact the administrator."
+    return None
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)):
     """Process a chat message. Returns JSON with response or paused status.
 
-    Uses sync graph.invoke() because PostgresSaver doesn't implement
-    async checkpoint methods in this version of langgraph-checkpoint-postgres.
-    The sync invoke runs in a thread pool via asyncio.to_thread.
+    Uses async graph.ainvoke() with AsyncPostgresSaver.
 
     Admin users can pass ``config_id`` to override the active LLM for this
-    single request. The override is scoped to the request via a ContextVar
-    that propagates into the graph's thread.
+    single request. The override is scoped to the request via a ContextVar.
     """
     log.info("[chat] START user=%s tier=%s session=%s intent=%s", claims.sub, claims.tier, req.session_id, req.intent)
 
@@ -231,8 +256,15 @@ async def chat(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)
                 log.warning("[chat] Failed to build override LLM config_id=%s: %s — using global", req.config_id, e)
 
     try:
-        graph = get_graph()
+        graph = await get_graph()
         thread_id = f"{claims.sub}:{req.session_id}"
+
+        # Daily budget check — before any graph work.
+        budget_msg = _enforce_budget(claims)
+        if budget_msg is not None:
+            _record_session(claims, req, [])
+            return {"response": budget_msg, "thread_id": thread_id, "budget_exceeded": True}
+
         # Pass recursion_limit from tier config — caps graph super-steps to prevent infinite loops.
         from app.config.settings import get_tier_config
         tier_cfg = get_tier_config(claims.tier)
@@ -245,7 +277,7 @@ async def chat(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)
         # The checkpointer persists state per thread_id across requests, so
         # the agent can remember prior turns within the same session.
         try:
-            prev_state = graph.get_state(config)
+            prev_state = await graph.aget_state(config)
             history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
             # Phase 6: load conversation state for follow-up detection.
             prev_conv_state = prev_state.values.get("conversation_state") if prev_state and prev_state.values else None
@@ -271,13 +303,8 @@ async def chat(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)
             "prev_conversation_state": prev_conv_state,
         }
 
-        import asyncio
-
-        def _run_graph():
-            return graph.invoke(state, config)
-
         try:
-            result = await asyncio.to_thread(_run_graph)
+            result = await graph.ainvoke(state, config)
         except Exception as e:
             error_type = type(e).__name__
             error_msg = str(e)
@@ -294,7 +321,13 @@ async def chat(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)
             log.info("[chat] PAUSED for HITL user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
             # Record the session even when paused — the user message counts as a turn.
             _record_session(claims, req, history)
-            return {"paused": True, "thread_id": thread_id}
+            paused_state = None
+            try:
+                paused_state = await graph.aget_state(config)
+            except Exception:
+                pass
+            return {"paused": True, "thread_id": thread_id,
+                    "action": _extract_paused_action(paused_state)}
 
         response = result.get("response") if isinstance(result, dict) else None
         log.info("[chat] SUCCESS user=%s session=%s response_len=%d", claims.sub, req.session_id, len(response) if response else 0)
@@ -311,13 +344,14 @@ def _record_session(claims, req, prior_history) -> None:
     """Upsert the chat session row. Best-effort — never fails the request."""
     try:
         from app.sessions import upsert_session
+        message = getattr(req, "message", "") or ""
         # Title = first user message (when this is the first turn).
-        title = req.message[:80] if not prior_history else ""
+        title = message[:80] if not prior_history else ""
         upsert_session(
             user_sub=claims.sub,
             session_id=req.session_id,
             title=title,
-            last_message=req.message[:200],
+            last_message=message[:200],
             tier=claims.tier,
         )
     except Exception as e:
@@ -327,20 +361,174 @@ def _record_session(claims, req, prior_history) -> None:
 # ── SSE streaming chat ────────────────────────────────────────
 
 # Human-readable labels for graph node names (for progress events).
+# Keys match the actual add_node() names across all (sub)graphs.
 _NODE_LABELS = {
-    "supervisor": "Routing request",
-    "retrieve_context": "Retrieving context",
-    "draft_analysis": "Planning analysis",
+    "direct_trivial": "Answering",
+    "direct_out_of_scope": "Answering",
+    "direct_generic": "Answering",
+    "direct_clarify": "Asking for clarification",
+    "direct_unauthorized": "Checking permissions",
+    "direct_multi_request": "Splitting requests",
+    "direct_tool": "Executing tool",
+    "retrieve": "Retrieving context",
+    "draft": "Planning analysis",
+    "plan": "Planning action",
+    "generate": "Generating response",
     "execute_tool": "Executing tool",
+    "execute": "Executing action",
     "finalize": "Finalizing response",
-    "plan_action": "Planning admin action",
-    "nl_general": "Generating response",
+    "nl_assistant": "Assistant",
+    "analyst": "Analyst",
+    "admin_ops": "Admin operations",
+    "supervisor": "Routing request",
 }
+
+# Subgraph nodes whose LLM output is the user-facing answer. Token events
+# are forwarded only for these — planner/draft text must never leak.
+_TOKEN_NODES = {"generate", "finalize"}
+
+# Event names that end a run. Exactly one is emitted per run.
+_TERMINAL_EVENTS = frozenset({"done", "paused", "error"})
+
+_HEARTBEAT_SECONDS = 10.0
+
+# Registry of in-flight background stream tasks so shutdown can cancel
+# them cleanly (and subscribers get an error event instead of silence).
+_stream_tasks: set[asyncio.Task] = set()
 
 
 def _sse_event(event: str, data: dict) -> str:
     """Format a single SSE event."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _message_text(chunk) -> str:
+    """Extract text content from an AIMessageChunk (str or content blocks)."""
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return ""
+
+
+def _extract_paused_action(final_state) -> dict | None:
+    """Pull the HITL interrupt payload (planned_tool/tool_args/prompt).
+
+    LangGraph stores interrupt values on the paused tasks of the state
+    snapshot. Returns {tool, args, prompt} or None.
+    """
+    try:
+        for task in getattr(final_state, "tasks", None) or []:
+            for intr in getattr(task, "interrupts", None) or []:
+                value = getattr(intr, "value", intr)
+                if isinstance(value, dict):
+                    return {
+                        "tool": value.get("planned_tool"),
+                        "args": value.get("tool_args", {}),
+                        "prompt": value.get("prompt"),
+                    }
+    except Exception as e:
+        log.warning("[stream] Failed to extract paused action: %s", e)
+    return None
+
+
+async def _run_events(graph, input_, config, thread_id):
+    """Yield normalized stream event dicts from graph.astream().
+
+    Event dicts (the ``event`` key is the SSE event name / Redis payload type):
+      progress {node, label}   — a graph step started (custom stream writer)
+      token    {delta}         — LLM answer chunk (generate/finalize only)
+      paused   {thread_id, action} — HITL interrupt (terminal)
+      done     {response, thread_id} — final answer (terminal)
+      error    {message}       — failure (terminal)
+
+    Exactly one terminal event is always yielded last.
+    """
+    try:
+        async for _ns, mode, payload in graph.astream(
+            input_,
+            config,
+            stream_mode=["custom", "messages"],
+            subgraphs=True,
+        ):
+            if mode == "custom":
+                if isinstance(payload, dict) and payload.get("event") == "progress":
+                    node = payload.get("node") or ""
+                    yield {
+                        "event": "progress",
+                        "node": node,
+                        "label": _NODE_LABELS.get(node, node.replace("_", " ").title()),
+                    }
+            elif mode == "messages":
+                chunk, meta = payload if isinstance(payload, tuple) else (payload, {})
+                node = (meta or {}).get("langgraph_node") or ""
+                if node in _TOKEN_NODES:
+                    text = _message_text(chunk)
+                    if text:
+                        yield {"event": "token", "delta": text}
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        log.error("[stream] Graph run error thread=%s: %s", thread_id, error_msg, exc_info=True)
+        yield {"event": "error", "message": error_msg}
+        return
+
+    # Stream finished — inspect the final state for the terminal event.
+    try:
+        final_state = await graph.aget_state(config)
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        log.error("[stream] Failed to read final state thread=%s: %s", thread_id, error_msg)
+        yield {"event": "error", "message": error_msg}
+        return
+
+    if final_state and final_state.next:
+        log.info("[stream] PAUSED thread=%s", thread_id)
+        yield {
+            "event": "paused",
+            "thread_id": thread_id,
+            "action": _extract_paused_action(final_state),
+        }
+    else:
+        values = final_state.values if final_state else {}
+        response = values.get("response") if isinstance(values, dict) else None
+        log.info("[stream] DONE thread=%s response_len=%d", thread_id, len(response) if response else 0)
+        yield {"event": "done", "response": response, "thread_id": thread_id}
+
+
+async def _run_events_with_heartbeat(graph, input_, config, thread_id):
+    """Wrap _run_events with periodic heartbeat events.
+
+    A heartbeat is yielded every ``_HEARTBEAT_SECONDS`` while waiting for
+    the next real event, so relays can distinguish "slow LLM" from "dead
+    agent" and clients never sit on a silent stream.
+    """
+    ait = _run_events(graph, input_, config, thread_id).__aiter__()
+    pending: asyncio.Task = asyncio.ensure_future(ait.__anext__())
+    try:
+        while True:
+            done, _pending = await asyncio.wait({pending}, timeout=_HEARTBEAT_SECONDS)
+            if not done:
+                yield {"event": "heartbeat"}
+                continue
+            try:
+                ev = pending.result()
+            except StopAsyncIteration:
+                return
+            yield ev
+            if ev.get("event") in _TERMINAL_EVENTS:
+                return
+            pending = asyncio.ensure_future(ait.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+        await ait.aclose()
 
 
 def _build_stream_state(claims, req, history, prev_conv_state) -> dict:
@@ -360,9 +548,9 @@ def _build_stream_state(claims, req, history, prev_conv_state) -> dict:
     }
 
 
-def _setup_chat_request(claims, req):
+async def _setup_chat_request(claims, req):
     """Common setup for /chat and /chat/stream: graph, thread_id, config, history."""
-    graph = get_graph()
+    graph = await get_graph()
     thread_id = f"{claims.sub}:{req.session_id}"
     from app.config.settings import get_tier_config
     tier_cfg = get_tier_config(claims.tier)
@@ -371,7 +559,7 @@ def _setup_chat_request(claims, req):
         "recursion_limit": tier_cfg.recursion_limit,
     }
     try:
-        prev_state = graph.get_state(config)
+        prev_state = await graph.aget_state(config)
         history = list(prev_state.values.get("history", [])) if prev_state and prev_state.values else []
         prev_conv_state = prev_state.values.get("conversation_state") if prev_state and prev_state.values else None
     except Exception:
@@ -380,194 +568,168 @@ def _setup_chat_request(claims, req):
     return graph, thread_id, config, history, prev_conv_state
 
 
-@app.post("/chat/stream")
-async def chat_stream(req: ChatRequest, claims: TokenClaims = Depends(get_current_user)):
-    """Stream agent events as SSE (node-level progress + final response).
+def _resolve_override_cfg(req, claims: TokenClaims, endpoint: str):
+    """Validate an optional admin config_id override. Returns LLMConfig or None."""
+    if getattr(req, "config_id", None) is None:
+        return None
+    if claims.tier != "admin":
+        log.warning("[%s] Non-admin user=%s attempted config_id override — ignored", endpoint, claims.sub)
+        return None
+    cfg = _read_llm_config_by_id(req.config_id)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"LLM config {req.config_id} not found")
+    return cfg
 
-    Same JWT validation, LLM override, history, and recursion-limit behavior
-    as POST /chat. Emits:
-      - event: progress  {node, label}   — after each graph node completes
-      - event: done      {response, thread_id}  — final response
-      - event: paused    {thread_id}     — HITL interrupt (write tool)
-      - event: error     {message}       — on failure
 
-    When Redis is available, the graph runs in a background thread that
-    publishes each chunk to the Redis channel ``agent:stream:{thread_id}``
-    as it arrives. The HTTP response returns immediately with JSON
-    ``{"thread_id": ..., "channel": "agent:stream:..."}`` so the client
-    can subscribe to the channel for incremental updates.
-
-    When Redis is NOT available, falls back to inline SSE: the graph runs
-    in a thread, chunks are collected, then emitted as SSE events.
-
-    The existing POST /chat remains unchanged as a compatibility/fallback endpoint.
-    """
-    log.info("[chat.stream] START user=%s tier=%s session=%s", claims.sub, claims.tier, req.session_id)
-
-    # Admin-only LLM override (same as /chat).
-    # The override token is set and reset inside _stream_generator() so both
-    # operations happen in the same async context (ContextVar tokens are
-    # context-scoped and cannot be reset from a different context).
-    override_cfg = None
-    if req.config_id is not None:
-        if claims.tier != "admin":
-            log.warning("[chat.stream] Non-admin user=%s attempted config_id override — ignored", claims.sub)
-        else:
-            override_cfg = _read_llm_config_by_id(req.config_id)
-            if override_cfg is None:
-                raise HTTPException(status_code=404, detail=f"LLM config {req.config_id} not found")
-
-    # ── Redis path: publish chunks to a channel, return immediately ──
-    from app.redis_client import is_redis_available, publish_event, get_redis
-    redis_ok = await is_redis_available()
-    if redis_ok:
-        import asyncio
-
-        graph, thread_id, config, history, prev_conv_state = _setup_chat_request(claims, req)
-        state = _build_stream_state(claims, req, history, prev_conv_state)
-        channel = f"agent:stream:{thread_id}"
-        status_key = f"agent:stream:{thread_id}:status"
-
-        # Mark the stream as active (1-hour TTL).
+async def _publish_run(graph, input_, config, thread_id, channel, claims, req, history, override_cfg):
+    """Background task: run the graph and publish events to a Redis Stream."""
+    from app.redis_client import publish_event
+    override_token = None
+    if override_cfg is not None:
         try:
-            redis_client = get_redis()
-            if redis_client is not None:
-                await redis_client.setex(status_key, 3600, "active")
+            override_token = set_llm_override(build_llm(override_cfg))
         except Exception as e:
-            log.warning("[chat.stream] Failed to set stream status key: %s", e)
+            log.warning("[stream] Failed to build override LLM: %s — using global", e)
+    try:
+        async for ev in _run_events_with_heartbeat(graph, input_, config, thread_id):
+            await publish_event(channel, ev)
+            if ev.get("event") in _TERMINAL_EVENTS:
+                _record_session(claims, req, history)
+    except asyncio.CancelledError:
+        # Shutdown/cancellation — give subscribers a terminal event.
+        await publish_event(channel, {"event": "error", "message": "stream cancelled"})
+        raise
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        log.error("[stream] Publisher error thread=%s: %s", thread_id, error_msg, exc_info=True)
+        await publish_event(channel, {"event": "error", "message": error_msg})
+    finally:
+        if override_token is not None:
+            reset_llm_override(override_token)
 
-        # Capture the event loop before entering the thread so _run_stream
-        # can schedule publish coroutines back on it.
-        loop = asyncio.get_event_loop()
 
-        async def _run_redis_stream():
-            """Run graph.stream() in a thread, publishing each chunk to Redis."""
-            # Set/reset the LLM override inside this task's own context so
-            # the ContextVar token doesn't cross context boundaries.
-            override_token = None
-            if override_cfg is not None:
-                try:
-                    override_llm = build_llm(override_cfg)
-                    override_token = set_llm_override(override_llm)
-                except Exception as e:
-                    log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
-            try:
-                def _run_stream():
-                    """Run graph.stream() in a thread (sync checkpointer).
+async def _sse_run(graph, input_, config, thread_id, claims, req, history, override_cfg):
+    """Async generator: yield SSE-formatted events for a graph run."""
+    override_token = None
+    if override_cfg is not None:
+        try:
+            override_token = set_llm_override(build_llm(override_cfg))
+        except Exception as e:
+            log.warning("[stream] Failed to build override LLM: %s — using global", e)
+    try:
+        async for ev in _run_events_with_heartbeat(graph, input_, config, thread_id):
+            yield _sse_event(ev["event"], {k: v for k, v in ev.items() if k != "event"})
+            if ev.get("event") in _TERMINAL_EVENTS:
+                _record_session(claims, req, history)
+    except (asyncio.CancelledError, GeneratorExit):
+        raise
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        log.error("[stream] SSE error thread=%s: %s", thread_id, error_msg, exc_info=True)
+        yield _sse_event("error", {"message": error_msg})
+    finally:
+        if override_token is not None:
+            reset_llm_override(override_token)
 
-                    Publishes each chunk to the Redis channel as it arrives
-                    so subscribers see incremental progress (not batched).
-                    """
-                    for chunk in graph.stream(state, config, stream_mode="updates"):
-                        if isinstance(chunk, dict):
-                            for node_name in chunk:
-                                label = _NODE_LABELS.get(node_name, node_name.replace("_", " ").title())
-                                event = {"event": "progress", "node": node_name, "label": label}
-                                # Schedule the publish on the event loop.
-                                asyncio.run_coroutine_threadsafe(
-                                    publish_event(channel, event), loop,
-                                )
 
-                await asyncio.to_thread(_run_stream)
+def _stream_endpoint_common(req, claims, request: Request, endpoint: str):
+    """Shared validation for stream endpoints.
 
-                # Check final state for HITL interrupt or response.
-                final_state = graph.get_state(config)
-                if final_state and final_state.next:
-                    log.info("[chat.stream] PAUSED user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
-                    _record_session(claims, req, history)
-                    await publish_event(channel, {"event": "paused", "thread_id": thread_id})
-                else:
-                    values = final_state.values if final_state else {}
-                    response = values.get("response") if isinstance(values, dict) else None
-                    log.info("[chat.stream] DONE user=%s session=%s response_len=%d",
-                             claims.sub, req.session_id, len(response) if response else 0)
-                    _record_session(claims, req, history)
-                    await publish_event(channel, {"event": "done", "response": response, "thread_id": thread_id})
-            except Exception as e:
-                error_type = type(e).__name__
-                error_msg = str(e)
-                log.error("[chat.stream] ERROR user=%s session=%s type=%s msg=%s",
-                          claims.sub, req.session_id, error_type, error_msg, exc_info=True)
-                await publish_event(channel, {"event": "error", "message": f"{error_type}: {error_msg}"})
-            finally:
-                if override_token is not None:
-                    reset_llm_override(override_token)
-                # Clear the active-stream status key.
-                try:
-                    redis_client = get_redis()
-                    if redis_client is not None:
-                        await redis_client.delete(status_key)
-                except Exception:
-                    pass
+    Returns (override_cfg, use_redis, wants_sse). The Accept header picks
+    the transport explicitly:
+      - ``Accept: text/event-stream`` → inline SSE
+      - ``Accept: application/json``  → Redis Streams relay (503 if down)
+      - anything else (e.g. */*)      → Redis if available else inline SSE
+    """
+    accept = (request.headers.get("accept") or "").lower()
+    wants_sse = "text/event-stream" in accept
+    wants_json = "application/json" in accept
+    return _resolve_override_cfg(req, claims, endpoint), wants_sse, wants_json
 
-        # Fire-and-forget the background stream task.
-        asyncio.create_task(_run_redis_stream())
 
+async def _start_stream_run(req, claims, request: Request, endpoint: str, input_factory):
+    """Shared body for /chat/stream and /approve/stream.
+
+    ``input_factory(graph, config, history, prev_conv_state)`` returns the
+    graph input (state dict or Command). Returns either JSON
+    {thread_id, channel} or a StreamingResponse.
+    """
+    from app.redis_client import is_redis_available, stream_key
+
+    override_cfg, wants_sse, wants_json = _stream_endpoint_common(req, claims, request, endpoint)
+
+    # Mode contract: explicit JSON wants the Redis relay — fail fast (503)
+    # BEFORE any graph work if Redis is down; explicit SSE → inline.
+    # No Accept header defaults to inline SSE — a generic client asking for
+    # a stream gets a stream, never an unexpected JSON channel response.
+    redis_ok = await is_redis_available()
+    if wants_json and not wants_sse and not redis_ok:
+        raise HTTPException(status_code=503, detail="Stream relay unavailable (Redis down)")
+    use_redis = redis_ok and wants_json and not wants_sse
+
+    graph, thread_id, config, history, prev_conv_state = await _setup_chat_request(claims, req)
+    input_ = input_factory(graph, config, history, prev_conv_state)
+
+    if use_redis:
+        channel = stream_key(thread_id)
+        task = asyncio.create_task(
+            _publish_run(graph, input_, config, thread_id, channel, claims, req, history, override_cfg)
+        )
+        _stream_tasks.add(task)
+        task.add_done_callback(_stream_tasks.discard)
         return {"thread_id": thread_id, "channel": channel}
 
-    # ── Fallback: inline SSE (Redis not available) ──
-    async def _stream_generator():
-        """Yield SSE events from graph.stream()."""
-        import asyncio
-        # Set the LLM override in this context so reset_llm_override works.
-        override_token = None
-        if override_cfg is not None:
-            try:
-                override_llm = build_llm(override_cfg)
-                override_token = set_llm_override(override_llm)
-            except Exception as e:
-                log.warning("[chat.stream] Failed to build override LLM: %s — using global", e)
-        try:
-            graph, thread_id, config, history, prev_conv_state = _setup_chat_request(claims, req)
-            state = _build_stream_state(claims, req, history, prev_conv_state)
-
-            def _run_stream():
-                """Run graph.stream() in a thread (sync checkpointer)."""
-                chunks = []
-                for chunk in graph.stream(state, config, stream_mode="updates"):
-                    chunks.append(chunk)
-                return chunks
-
-            chunks = await asyncio.to_thread(_run_stream)
-
-            # Emit progress events for each node update.
-            for chunk in chunks:
-                if not isinstance(chunk, dict):
-                    continue
-                for node_name in chunk:
-                    label = _NODE_LABELS.get(node_name, node_name.replace("_", " ").title())
-                    yield _sse_event("progress", {"node": node_name, "label": label})
-
-            # Check final state for HITL interrupt or response.
-            final_state = graph.get_state(config)
-            if final_state and final_state.next:
-                # Graph paused — HITL interrupt.
-                log.info("[chat.stream] PAUSED user=%s session=%s thread=%s", claims.sub, req.session_id, thread_id)
-                _record_session(claims, req, history)
-                yield _sse_event("paused", {"thread_id": thread_id})
-            else:
-                values = final_state.values if final_state else {}
-                response = values.get("response") if isinstance(values, dict) else None
-                log.info("[chat.stream] DONE user=%s session=%s response_len=%d",
-                         claims.sub, req.session_id, len(response) if response else 0)
-                _record_session(claims, req, history)
-                yield _sse_event("done", {"response": response, "thread_id": thread_id})
-
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = str(e)
-            log.error("[chat.stream] ERROR user=%s session=%s type=%s msg=%s",
-                      claims.sub, req.session_id, error_type, error_msg, exc_info=True)
-            yield _sse_event("error", {"message": f"{error_type}: {error_msg}"})
-        finally:
-            if override_token is not None:
-                reset_llm_override(override_token)
-
     return StreamingResponse(
-        _stream_generator(),
+        _sse_run(graph, input_, config, thread_id, claims, req, history, override_cfg),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request, claims: TokenClaims = Depends(get_current_user)):
+    """Stream agent events (progress/token/heartbeat + one terminal event).
+
+    Transport is selected by the Accept header:
+      - ``Accept: application/json`` → returns ``{"thread_id", "channel"}``
+        and the run publishes events to the Redis Stream
+        ``agent:stream:{thread_id}:{run_id}`` (XADD, replayable via XREAD from 0-0).
+        Returns 503 before running the graph when Redis is unavailable.
+      - ``Accept: text/event-stream`` → inline SSE response.
+      - other/absent → Redis relay when available, else inline SSE.
+
+    Exactly one graph execution per request — the response is never re-POSTed.
+    """
+    log.info("[chat.stream] START user=%s tier=%s session=%s", claims.sub, claims.tier, req.session_id)
+
+    budget_msg = _enforce_budget(claims)
+    if budget_msg is not None:
+        thread_id = f"{claims.sub}:{req.session_id}"
+        _record_session(claims, req, [])
+        accept = (request.headers.get("accept") or "").lower()
+        if "application/json" in accept and "text/event-stream" not in accept:
+            # Publish the deterministic reply to the stream so the BFF sees it.
+            from app.redis_client import is_redis_available, publish_event, stream_key
+            if not await is_redis_available():
+                raise HTTPException(status_code=503, detail="Stream relay unavailable (Redis down)")
+            channel = stream_key(thread_id)
+            await publish_event(channel, {"event": "done", "response": budget_msg, "thread_id": thread_id})
+            return {"thread_id": thread_id, "channel": channel}
+        return StreamingResponse(
+            _static_sse(budget_msg, thread_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return await _start_stream_run(
+        req, claims, request, "chat.stream",
+        lambda graph, config, history, prev: _build_stream_state(claims, req, history, prev),
+    )
+
+
+async def _static_sse(message: str, thread_id: str):
+    """SSE stream that emits a single deterministic done event (budget etc.)."""
+    yield _sse_event("done", {"response": message, "thread_id": thread_id})
 
 
 @app.post("/approve")
@@ -575,7 +737,11 @@ async def approve(req: ApproveRequest, claims: TokenClaims = Depends(get_current
     """Resume a paused HITL thread with a human decision."""
     log.info("[approve] START user=%s session=%s approved=%s", claims.sub, req.session_id, req.approved)
 
-    graph = get_graph()
+    budget_msg = _enforce_budget(claims)
+    if budget_msg is not None:
+        return {"response": budget_msg, "budget_exceeded": True}
+
+    graph = await get_graph()
     thread_id = f"{claims.sub}:{req.session_id}"
     from app.config.settings import get_tier_config
     tier_cfg = get_tier_config(claims.tier)
@@ -586,13 +752,8 @@ async def approve(req: ApproveRequest, claims: TokenClaims = Depends(get_current
 
     resume_value = {"approved": req.approved, "edited": req.edited}
 
-    import asyncio
-
-    def _resume_graph():
-        return graph.invoke(Command(resume=resume_value), config)
-
     try:
-        result = await asyncio.to_thread(_resume_graph)
+        result = await graph.ainvoke(Command(resume=resume_value), config)
     except Exception as e:
         error_type = type(e).__name__
         error_msg = str(e)
@@ -608,6 +769,38 @@ async def approve(req: ApproveRequest, claims: TokenClaims = Depends(get_current
     return {"response": response}
 
 
+@app.post("/approve/stream")
+async def approve_stream(req: ApproveRequest, request: Request, claims: TokenClaims = Depends(get_current_user)):
+    """Resume a paused HITL thread, streaming progress like /chat/stream.
+
+    Same Accept-header transport contract and event schema as /chat/stream.
+    """
+    log.info("[approve.stream] START user=%s session=%s approved=%s", claims.sub, req.session_id, req.approved)
+
+    budget_msg = _enforce_budget(claims)
+    if budget_msg is not None:
+        thread_id = f"{claims.sub}:{req.session_id}"
+        accept = (request.headers.get("accept") or "").lower()
+        if "application/json" in accept and "text/event-stream" not in accept:
+            from app.redis_client import is_redis_available, publish_event, stream_key
+            if not await is_redis_available():
+                raise HTTPException(status_code=503, detail="Stream relay unavailable (Redis down)")
+            channel = stream_key(thread_id)
+            await publish_event(channel, {"event": "done", "response": budget_msg, "thread_id": thread_id})
+            return {"thread_id": thread_id, "channel": channel}
+        return StreamingResponse(
+            _static_sse(budget_msg, thread_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    resume_value = {"approved": req.approved, "edited": req.edited}
+    return await _start_stream_run(
+        req, claims, request, "approve.stream",
+        lambda graph, config, history, prev: Command(resume=resume_value),
+    )
+
+
 @app.get("/llm-config")
 async def get_llm_config(_claims: TokenClaims = Depends(get_current_user)):
     """Read the current global LLM config (any authenticated user)."""
@@ -616,7 +809,9 @@ async def get_llm_config(_claims: TokenClaims = Depends(get_current_user)):
         "provider": cfg.provider,
         "model": cfg.model,
         "base_url": cfg.base_url,
-        "api_key": cfg.api_key,
+        # Never expose the stored key — masked display value only.
+        "api_key": mask_api_key(cfg.api_key),
+        "api_key_set": bool(cfg.api_key),
         "request_timeout_seconds": cfg.request_timeout_seconds,
         "num_predict": cfg.num_predict,
         "context_window_size": cfg.context_window_size,
@@ -637,6 +832,14 @@ async def set_llm_config(req: LLMConfigRequest, claims: TokenClaims = Depends(re
     name = req.name or f"{req.provider}/{req.model}"
     pool = get_pool()
     with pool.connection() as conn:
+        # A masked api_key means "keep the current key" — read it before
+        # deactivating the existing row.
+        api_key = req.api_key
+        if api_key == MASKED_API_KEY:
+            row = conn.execute(
+                "SELECT api_key FROM agent.llm_config WHERE is_active = TRUE LIMIT 1"
+            ).fetchone()
+            api_key = row[0] if row else ""
         # Deactivate all existing configs, then insert the new active one.
         conn.execute("UPDATE agent.llm_config SET is_active = FALSE WHERE is_active = TRUE")
         conn.execute(
@@ -644,7 +847,7 @@ async def set_llm_config(req: LLMConfigRequest, claims: TokenClaims = Depends(re
                    (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size, is_active, updated_by, updated_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
                RETURNING id""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time()),
+            (name, req.provider, req.model, req.base_url, api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time()),
         )
 
     # Force immediate refresh instead of waiting for the poller.
@@ -682,7 +885,8 @@ async def list_llm_configs(claims: TokenClaims = Depends(require_admin_user)):
             "provider": r[2],
             "model": r[3],
             "base_url": r[4] or "",
-            "api_key": r[5] or "",
+            "api_key": mask_api_key(r[5]),
+            "api_key_set": bool(r[5]),
             "request_timeout_seconds": r[6],
             "num_predict": r[7],
             "context_window_size": r[8] if len(r) > 8 else None,
@@ -710,7 +914,10 @@ async def create_llm_config(req: LLMConfigRequest, claims: TokenClaims = Depends
                    (name, provider, model, base_url, api_key, request_timeout_seconds, num_predict, context_window_size, is_active, updated_by, updated_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s)
                RETURNING id""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time()),
+            # A masked key on a brand-new config means "no key".
+            (name, req.provider, req.model, req.base_url,
+             "" if req.api_key == MASKED_API_KEY else req.api_key,
+             timeout, num_predict, req.context_window_size, claims.sub, time.time()),
         ).fetchone()
         config_id = row[0] if row else None
 
@@ -733,13 +940,16 @@ async def update_llm_config(config_id: int, req: LLMConfigRequest, claims: Token
     pool = get_pool()
     with pool.connection() as conn:
         row = conn.execute(
+            # NULLIF(masked, masked) → NULL → COALESCE keeps the stored key,
+            # so a UI that echoes the mask back doesn't clobber the secret.
             """UPDATE agent.llm_config
                    SET name = %s, provider = %s, model = %s, base_url = %s,
-                       api_key = %s, request_timeout_seconds = %s, num_predict = %s,
+                       api_key = COALESCE(NULLIF(%s, %s), api_key),
+                       request_timeout_seconds = %s, num_predict = %s,
                        context_window_size = %s,
                        updated_by = %s, updated_at = %s
                  WHERE id = %s RETURNING id, is_active""",
-            (name, req.provider, req.model, req.base_url, req.api_key, timeout, num_predict, req.context_window_size, claims.sub, time.time(), config_id),
+            (name, req.provider, req.model, req.base_url, req.api_key, MASKED_API_KEY, timeout, num_predict, req.context_window_size, claims.sub, time.time(), config_id),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
@@ -1045,8 +1255,8 @@ async def list_sessions(claims: TokenClaims = Depends(get_current_user)):
 async def get_session(session_id: str, claims: TokenClaims = Depends(get_current_user)):
     """Load a session's full message history from the checkpointer."""
     from app.sessions import get_session_messages
-    graph = get_graph()
-    messages = get_session_messages(claims.sub, session_id, graph)
+    graph = await get_graph()
+    messages = await get_session_messages(claims.sub, session_id, graph)
     return {"session_id": session_id, "messages": messages}
 
 

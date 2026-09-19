@@ -185,7 +185,7 @@ def list_sessions(user_sub: str, tier: str, limit: int = 50) -> list[ChatSession
     ]
 
 
-def get_session_messages(user_sub: str, session_id: str, graph) -> list[dict]:
+async def get_session_messages(user_sub: str, session_id: str, graph) -> list[dict]:
     """Reconstruct the message history for a session from the checkpointer.
 
     Returns a list of {role, content, timestamp} dicts. The graph's
@@ -195,7 +195,7 @@ def get_session_messages(user_sub: str, session_id: str, graph) -> list[dict]:
     thread_id = _thread_id(user_sub, session_id)
     config = {"configurable": {"thread_id": thread_id}}
     try:
-        state = graph.get_state(config)
+        state = await graph.aget_state(config)
         if state and state.values:
             history = state.values.get("history", [])
             return [

@@ -58,8 +58,9 @@ from app.renderer import (
     render_multi_request,
 )
 from app.tool_executor import execute_tool
+from app.domain_registry import detect_topic, explain
 from app.free_tier_llm import is_free_llm_enabled
-from app.graphs.common import append_history
+from app.graphs.common import append_history, emit_step
 
 log = logging.getLogger(__name__)
 
@@ -251,6 +252,17 @@ def route(state: SupervisorState) -> str:
     if req.request_kind == "out_of_scope":
         return "direct_out_of_scope"
 
+    # Known domain term → deterministic registry explanation (0 LLM).
+    # Covers domain_explanation kind and question-form ambiguous messages
+    # ("מה הסיכוי לזכות בלוטו?") that would otherwise hit the LLM. The "?"
+    # guard prevents hijacking ambiguous statements that merely mention a term.
+    msg = state.get("message", "")
+    if req.request_kind == "domain_explanation" or (
+        req.request_kind == "ambiguous" and "?" in msg
+    ):
+        if detect_topic(msg):
+            return "direct_domain"
+
     # Domain explanation → NL worker (needs LLM for natural explanation).
     # Free-tier gating: when free-tier LLM is disabled (default), free users
     # get a generic deterministic response instead of calling the LLM.
@@ -312,6 +324,7 @@ def _conv_state_update(req: NormalizedRequest) -> dict:
 
 def direct_trivial(state: SupervisorState) -> dict:
     """Return a deterministic trivial response (greeting / capabilities / goodbye)."""
+    emit_step("direct_trivial")
     req, _ = _derive(state)
     tier = state.get("tier", "free")
     lang = req.language
@@ -329,6 +342,7 @@ def direct_trivial(state: SupervisorState) -> dict:
 
 
 def direct_out_of_scope(state: SupervisorState) -> dict:
+    emit_step("direct_out_of_scope")
     req, _ = _derive(state)
     resp = render_out_of_scope(req.language)
     return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
@@ -340,18 +354,30 @@ def direct_generic(state: SupervisorState) -> dict:
     Used when free-tier LLM is disabled (default) and the request is ambiguous
     or a domain explanation. Zero LLM calls.
     """
+    emit_step("direct_generic")
     req, _ = _derive(state)
     resp = render_free_generic(req.language)
     return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
+def direct_domain(state: SupervisorState) -> dict:
+    """Deterministic domain-term explanation from the registry (0 LLM)."""
+    emit_step("direct_domain")
+    req, _ = _derive(state)
+    topic = detect_topic(state.get("message", ""))
+    resp = explain(topic, req.language) if topic else render_free_generic(req.language)
+    return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
+
+
 def direct_clarify(state: SupervisorState) -> dict:
+    emit_step("direct_clarify")
     req, res = _derive(state)
     resp = render_missing(res.missing_hint, req.language)
     return {"response": resp, "history": append_history(state, resp), **_conv_state_update(req)}
 
 
 def direct_unauthorized(state: SupervisorState) -> dict:
+    emit_step("direct_unauthorized")
     req, res = _derive(state)
     tier = state.get("tier", "free")
     resp = render_unauthorized(res.tool, tier, req.language)
@@ -360,6 +386,7 @@ def direct_unauthorized(state: SupervisorState) -> dict:
 
 def direct_multi_request(state: SupervisorState) -> dict:
     """Ask the user to pick one request when multiple are detected."""
+    emit_step("direct_multi_request")
     req, _ = _derive(state)
     lang = req.language
     requests = _detect_multiple_requests(state.get("message", ""))
@@ -369,6 +396,7 @@ def direct_multi_request(state: SupervisorState) -> dict:
 
 def direct_tool(state: SupervisorState) -> dict:
     """Execute a read tool directly (zero LLM planner calls)."""
+    emit_step("direct_tool")
     req, res = _derive(state)
     jwt_token = state.get("jwt_token", "")
     lang = req.language
@@ -422,6 +450,7 @@ def build_supervisor_graph(checkpointer=None):
     g.add_node("direct_trivial", direct_trivial)
     g.add_node("direct_out_of_scope", direct_out_of_scope)
     g.add_node("direct_generic", direct_generic)
+    g.add_node("direct_domain", direct_domain)
     g.add_node("direct_clarify", direct_clarify)
     g.add_node("direct_unauthorized", direct_unauthorized)
     g.add_node("direct_multi_request", direct_multi_request)
@@ -434,6 +463,7 @@ def build_supervisor_graph(checkpointer=None):
         "direct_trivial": "direct_trivial",
         "direct_out_of_scope": "direct_out_of_scope",
         "direct_generic": "direct_generic",
+        "direct_domain": "direct_domain",
         "direct_clarify": "direct_clarify",
         "direct_unauthorized": "direct_unauthorized",
         "direct_multi_request": "direct_multi_request",
@@ -443,8 +473,9 @@ def build_supervisor_graph(checkpointer=None):
         "admin_ops": "admin_ops",
     })
     for node in ("direct_trivial", "direct_out_of_scope", "direct_generic",
-                 "direct_clarify", "direct_unauthorized", "direct_multi_request",
-                 "direct_tool", "nl_assistant", "analyst", "admin_ops"):
+                 "direct_domain", "direct_clarify", "direct_unauthorized",
+                 "direct_multi_request", "direct_tool", "nl_assistant",
+                 "analyst", "admin_ops"):
         g.add_edge(node, END)
 
     return g.compile(checkpointer=checkpointer)

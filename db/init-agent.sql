@@ -74,7 +74,7 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='agent' AND table_name='llm_config' AND column_name='context_window_size')
     THEN
         ALTER TABLE agent.llm_config ADD COLUMN context_window_size INT;
-    END IF
+    END IF;
 END $$;
 -- Ensure at most one active config. Uses a partial unique index.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_config_one_active

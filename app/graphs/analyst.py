@@ -19,7 +19,7 @@ from typing_extensions import TypedDict
 
 from app.config.settings import get_tier_config
 from app.llm.router import get_llm
-from app.llm.limiter import llm_invoke
+from app.llm.limiter import llm_invoke, llm_stream_invoke
 from app.metering import meter_llm
 from app.prompt_builder import build_prompt, format_run_data
 from app.graphs.common import (
@@ -27,6 +27,7 @@ from app.graphs.common import (
     append_history,
     make_retrieve_node,
     make_hitl_gate,
+    emit_step,
 )
 from app.graphs.tool_parser import parse_tool_call
 
@@ -61,6 +62,7 @@ def draft_analysis(state: AnalystState) -> dict:
       TOOL: <tool_name> ARGS: {"key": "value", ...}
     Otherwise it responds with a plain text analysis.
     """
+    emit_step("draft")
     user_sub = state["user_sub"]
     session_id = state["session_id"]
     hist_len = len(state.get("history", []))
@@ -124,6 +126,7 @@ maybe_hitl = make_hitl_gate("analyst", execute_node="execute_tool", finalize_nod
 
 def execute_tool(state: AnalystState) -> dict:
     """Execute the planned tool (read or write, already approved if write)."""
+    emit_step("execute_tool")
     planned_tool = state.get("planned_tool")
     tool_args = state.get("tool_args", {})
     jwt_token = state.get("jwt_token", "")
@@ -134,13 +137,19 @@ def execute_tool(state: AnalystState) -> dict:
         return {"tool_result": None}
 
     log.info("[analyst.execute] START user=%s session=%s tool=%s args=%s", user_sub, session_id, planned_tool, tool_args)
+    from app.tool_executor import execute_tool as _execute
     try:
-        result = _call_tool(planned_tool, tool_args, user_sub, jwt_token)
+        # Single dispatcher: JWT re-authorization + full tool coverage.
+        # Unauthorized/unknown tools become error results, not crashes.
+        result = _execute(planned_tool, tool_args, jwt_token)
         log.info("[analyst.execute] SUCCESS user=%s session=%s tool=%s", user_sub, session_id, planned_tool)
         return {"tool_result": result}
+    except PermissionError as e:
+        log.warning("[analyst.execute] DENIED user=%s session=%s tool=%s: %s", user_sub, session_id, planned_tool, e)
+        return {"tool_result": {"error": str(e), "tool": planned_tool, "denied": True}}
     except Exception as e:
         log.error("[analyst.execute] ERROR user=%s session=%s tool=%s msg=%s", user_sub, session_id, planned_tool, e, exc_info=True)
-        raise
+        return {"tool_result": {"error": str(e), "tool": planned_tool}}
 
 
 @meter_llm
@@ -151,6 +160,7 @@ def finalize(state: AnalystState) -> dict:
     When a tool result is present, the LLM is invoked to transform the structured
     result into concise natural language (per the grounding rules in the system prompt).
     """
+    emit_step("finalize")
     user_sub = state["user_sub"]
     session_id = state["session_id"]
     draft = state.get("draft", "")
@@ -158,6 +168,7 @@ def finalize(state: AnalystState) -> dict:
     planned_tool = state.get("planned_tool")
     lang = state.get("lang") or "en"
 
+    resp = None
     if tool_result:
         # Invoke the LLM to format the tool result into readable text.
         try:
@@ -171,7 +182,8 @@ def finalize(state: AnalystState) -> dict:
                 run_data=run_data,
                 history=hist,
             )
-            resp = llm_invoke(llm, prompt)
+            # .stream() so /chat/stream emits token events for this node.
+            resp = llm_stream_invoke(llm, prompt)
             response = resp.content if hasattr(resp, "content") else str(resp)
         except Exception as e:
             log.error("[analyst.finalize] LLM formatting failed: %s — using raw result", e)
@@ -187,47 +199,6 @@ def finalize(state: AnalystState) -> dict:
         "_usage": getattr(resp, "usage_metadata", None) if tool_result else None,
         "_response_metadata": getattr(resp, "response_metadata", None) if tool_result else None,
     }
-
-
-def _call_tool(tool_name: str, args: dict, user_sub: str, jwt_token: str) -> dict:
-    """Dispatch a tool call by name."""
-    from app.tools import lottery_grpc, saved_numbers
-
-    if tool_name == "generate_form":
-        return lottery_grpc.generate_form(
-            how_many=args.get("how_many", 1),
-            form_type=args.get("form_type", 6),
-            will_be=args.get("will_be"),
-            strength=args.get("strength", 2),
-            window_from=args.get("window_from"),
-            window_to=args.get("window_to"),
-        )
-    elif tool_name == "get_statistics":
-        return lottery_grpc.get_statistics(
-            how_many=args.get("how_many", 10),
-            group_size=args.get("group_size", args.get("form_type", 2)),
-            strength=args.get("strength", "hot"),
-            window_from=args.get("window_from"),
-            window_to=args.get("window_to"),
-        )
-    elif tool_name == "analyze":
-        return lottery_grpc.analyze(
-            form=args.get("form", []),
-            window_from=args.get("window_from"),
-            window_to=args.get("window_to"),
-        )
-    elif tool_name == "list_saved_numbers":
-        return saved_numbers.list_saved_numbers(user_sub=user_sub, jwt_token=jwt_token)
-    elif tool_name == "save_numbers":
-        return saved_numbers.save_numbers(
-            user_sub=user_sub,
-            jwt_token=jwt_token,
-            category=args.get("category", "default"),
-            numbers=args.get("numbers", []),
-            will_be=args.get("will_be"),
-        )
-    else:
-        return {"error": f"Unknown tool: {tool_name}"}
 
 
 def build_analyst_graph():

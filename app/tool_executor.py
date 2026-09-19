@@ -129,15 +129,35 @@ def _dispatch(tool_name: str, args: dict, claims: TokenClaims) -> Any:
         return admin_ops.read_token_usage(claims=claims, days=args.get("days", 7))
     if tool_name == "trigger_scraper":
         from app.tools import admin_ops
-        return admin_ops.trigger_scraper(claims=claims)
+        result = admin_ops.trigger_scraper(claims=claims)
+        # New draw data arrived — invalidate cached statistics/analysis.
+        try:
+            lottery_grpc.invalidate_tool_cache()
+        except Exception:
+            pass
+        return result
     if tool_name == "list_db_tables":
         from app.tools import admin_ops
         return admin_ops.list_db_tables(claims=claims, schema=args.get("schema", "agent"))
     if tool_name == "query_db":
         from app.tools import admin_ops
         return admin_ops.query_db(claims=claims, sql=args.get("sql", ""), limit=args.get("limit", 50))
-    # Tools not yet implemented in admin_ops.py — raise a clear error.
-    if tool_name in ("edit_file", "read_code", "list_files", "search_web"):
-        raise ValueError(f"Tool '{tool_name}' is not yet implemented.")
+    if tool_name == "search_web":
+        from app.tools import online_search
+        return online_search.search_web(query=args.get("query", ""), limit=args.get("limit", 5))
+    if tool_name == "read_code":
+        from app.tools import code_editor
+        return code_editor.read_code(file_path=args.get("file_path", ""))
+    if tool_name == "list_files":
+        from app.tools import code_editor
+        return code_editor.list_files(directory=args.get("directory"))
+    if tool_name == "edit_file":
+        from app.tools import code_editor
+        return code_editor.edit_file(
+            file_path=args.get("file_path", ""),
+            old_string=args.get("old_string"),
+            new_string=args.get("new_string"),
+            content=args.get("content"),
+        )
 
     raise ValueError(f"Unknown tool: {tool_name}")

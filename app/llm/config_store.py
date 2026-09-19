@@ -36,6 +36,32 @@ class LLMConfig:
     context_window_size: int | None = None  # context window size in tokens (None = model default)
 
 
+# ── API key hygiene ─────────────────────────────────────────
+# Stored configs may reference an env var instead of embedding a
+# plaintext key: api_key="env:GOOGLE_API_KEY". Read endpoints mask
+# the stored value, and writes treat the mask as "keep existing".
+MASKED_API_KEY = "********"
+
+
+def mask_api_key(key: str | None) -> str:
+    """Display form of a stored API key — never reveals the value."""
+    return MASKED_API_KEY if key else ""
+
+
+def resolve_api_key(key: str | None) -> str:
+    """Resolve a stored API key for actual use.
+
+    Supports ``env:VAR_NAME`` references so secrets can live in the
+    process environment instead of the DB.
+    """
+    if not key:
+        return ""
+    if key.startswith("env:"):
+        import os
+        return os.environ.get(key[4:], "")
+    return key
+
+
 def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
     """Build a chat model instance from config.
 
@@ -66,7 +92,7 @@ def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
         from langchain_google_genai import ChatGoogleGenerativeAI
         gemini_kwargs: dict = {
             "model": cfg.model,
-            "google_api_key": cfg.api_key,
+            "google_api_key": resolve_api_key(cfg.api_key),
             "timeout": timeout,
         }
         if cfg.context_window_size is not None:
@@ -77,7 +103,7 @@ def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
         from langchain_openai import ChatOpenAI
         openai_kwargs: dict = {
             "model": cfg.model,
-            "api_key": cfg.api_key,
+            "api_key": resolve_api_key(cfg.api_key),
             "base_url": cfg.base_url or "https://api.openai.com/v1",
             "timeout": timeout,
         }
@@ -89,7 +115,7 @@ def build_llm(cfg: LLMConfig, mock_responses: list[str] | None = None):
         from langchain_anthropic import ChatAnthropic
         anthropic_kwargs: dict = {
             "model": cfg.model,
-            "api_key": cfg.api_key,
+            "api_key": resolve_api_key(cfg.api_key),
             "base_url": cfg.base_url or "https://api.anthropic.com",
             "timeout": timeout,
         }
@@ -113,6 +139,7 @@ async def check_connection(cfg: LLMConfig) -> tuple[bool, str]:
     import httpx
 
     provider = cfg.provider
+    api_key = resolve_api_key(cfg.api_key)
 
     if provider == "mock":
         return True, "Mock provider"
@@ -133,8 +160,8 @@ async def check_connection(cfg: LLMConfig) -> tuple[bool, str]:
         base_url = (cfg.base_url or "https://api.openai.com/v1").rstrip("/")
         try:
             headers = {}
-            if cfg.api_key:
-                headers["Authorization"] = f"Bearer {cfg.api_key}"
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{base_url}/models", headers=headers)
                 resp.raise_for_status()
@@ -145,8 +172,8 @@ async def check_connection(cfg: LLMConfig) -> tuple[bool, str]:
     if provider == "anthropic":
         try:
             headers = {}
-            if cfg.api_key:
-                headers["x-api-key"] = cfg.api_key
+            if api_key:
+                headers["x-api-key"] = api_key
                 headers["anthropic-version"] = "2023-06-01"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
@@ -160,8 +187,8 @@ async def check_connection(cfg: LLMConfig) -> tuple[bool, str]:
     if provider == "gemini":
         try:
             url = "https://generativelanguage.googleapis.com/v1/models"
-            if cfg.api_key:
-                url = f"{url}?key={cfg.api_key}"
+            if api_key:
+                url = f"{url}?key={api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()

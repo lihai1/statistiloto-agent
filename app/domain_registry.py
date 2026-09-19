@@ -19,8 +19,9 @@ _DOMAIN_DEFINITIONS = {
         "archive_window": "The archive window controls which historical draws are included in the analysis. A narrower window (e.g. last 100 draws) may show different patterns than the full archive.",
         "group_size": "Group size (1-6) is the number of numbers analyzed together: 1 singles, 2 pairs, 3 triples, 4 quads, 5 quints, 6 full six-number groups.",
         "strong_number": "The strong number is always separate from the six-number group and is never part of it.",
-        "probability": "Each draw is independent and random. Historical frequency does not increase the probability of a number being drawn next.",
+        "probability": "Each 6-number combination has a 1 in 2,324,784 chance; including the strong number, the first-prize odds are 1 in 16,273,488. Every draw is independent and random — historical frequency does not increase the chance of a number being drawn next.",
         "lucky_numbers": "Lucky numbers are your chosen numbers that will appear in every generated form. They are pinned, not statistically selected.",
+        "luck": "In a fair lottery every combination is equally likely — no numbers are inherently luckier than others, and lucky charms or rituals do not change the odds.",
         "saved_numbers": "Saved numbers are sets you previously bookmarked in your wallet. You can reuse them as lucky numbers or for analysis.",
     },
     "he": {
@@ -34,8 +35,9 @@ _DOMAIN_DEFINITIONS = {
         "archive_window": "טווח הגרלות קובע אילו הגרלות היסטוריות ייכללו בניתוח. טווח צר יותר (למשל 100 ההגרלות האחרונות) עשוי להראות דפוסים שונים מהארכיון המלא.",
         "group_size": "גודל קבוצה (1-6) הוא מספר המספרים שנבדקים יחד: 1 מספרים בודדים, 2 זוגות, 3 שלשות, 4 רביעיות, 5 חמישיות, 6 שישיות מלאות.",
         "strong_number": "המספר החזק תמיד נפרד מקבוצת השישה ולעולם לא חלק ממנה.",
-        "probability": "כל הגרלה היא עצמאית ואקראית. תדירות היסטורית אינה מגדילה את הסיכוי שמספר יוגרל בהגרלה הבאה.",
+        "probability": "לכל צירוף של 6 מספרים סיכוי של 1 ל-2,324,784; עם המספר החזק, הסיכוי לזכות בפרס הראשון הוא 1 ל-16,273,488. כל הגרלה היא עצמאית ואקראית — תדירות היסטורית אינה מגדילה את הסיכוי שמספר יוגרל.",
         "lucky_numbers": "מספרי מזל הם מספרים שבחרת שיופיעו בכל טופס שייווצר. הם קבועים, לא נבחרים סטטיסטית.",
+        "luck": "בלוטו הוגן לכל צירוף סיכוי זהה — אין מספרים 'ברי מזל' מלידה, וקמעות או טקסים אינם משנים את הסיכויים.",
         "saved_numbers": "מספרים שמורים הם סטים ששמרת בעבר בארנק שלך. תוכל לעשות בהם שימוש חוזר כמספרי מזל או לניתוח.",
     },
 }
@@ -107,6 +109,9 @@ def detect_topic(message: str) -> str | None:
     # Saved numbers
     if re.search(r"\b(saved numbers?|bookmarked numbers?)\b", msg) or "מספרים שמורים" in msg:
         return "saved_numbers"
+    # Luck (checked last so "מספרי מזל" still hits lucky_numbers above)
+    if re.search(r"\b(luck|lucky|superstition)\b", msg) or "מזל" in msg:
+        return "luck"
     return None
 
 

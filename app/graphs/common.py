@@ -26,6 +26,21 @@ log = logging.getLogger(__name__)
 HISTORY_CAP = 20
 
 
+def emit_step(node: str) -> None:
+    """Emit a step-started progress event to the stream writer.
+
+    Nodes call this as their first statement so /chat/stream can relay a
+    ``{"event": "progress", "node": <name>}`` event when the step *starts*
+    (not after it completes, which is all stream_mode="updates" gives).
+    No-op when the graph runs without a stream writer (plain invoke).
+    """
+    try:
+        from langgraph.config import get_stream_writer
+        get_stream_writer()({"event": "progress", "node": node})
+    except Exception:
+        pass
+
+
 def format_history(history: list) -> str:
     """Format conversation history for inclusion in the LLM prompt."""
     if not history:
@@ -74,6 +89,7 @@ def make_retrieve_node(log_prefix: str) -> Callable[[dict], dict]:
     where RAG adds no value.
     """
     def retrieve_docs(state: dict) -> dict:
+        emit_step("retrieve")
         user_sub = state["user_sub"]
         tier = state["tier"]
         session_id = state["session_id"]

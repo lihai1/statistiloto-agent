@@ -63,6 +63,15 @@ HEBREW_FORM_GENERATION_RE = re.compile(
     r"(?:צור|צרי|תיצור|תיצרי|תייצר|תייצרי|יצירת|הגרל(?!ת)|תגריל|תגרילי|יגריל).{0,30}(?:טופס|טפסים|מזל|צירוף|שילוב)",
     re.IGNORECASE,
 )
+# Bare generation verb with no object ("generate", "צור") — the user clearly
+# wants form generation but gave no count → form_generation, resolver will
+# produce a "how many forms" clarification instead of falling to the LLM.
+BARE_GENERATE_RE = re.compile(
+    r"^\s*(generate|create|make)\s*[.?!]*\s*$", re.IGNORECASE
+)
+HEBREW_BARE_GENERATE_RE = re.compile(
+    r"^\s*(צור|צרי|תיצור|תייצר|תיצרי|תייצרי)\s*[.?!]*\s*$"
+)
 ANALYZE_RE = re.compile(
     r"\b(analyz(?:e|ed|ing|es)|analyse|analysis|what stands out|check|historical coverage|best historical|which has the best)\b",
     re.IGNORECASE,
@@ -75,6 +84,14 @@ SIMULATE_RE = re.compile(
     r"\b(simulat(?:e|ed|ing|es)|backtest|test my numbers|how (?:would|did) my numbers (?:have )?(?:do|done|perform))\b",
     re.IGNORECASE,
 )
+# Reporting a COMPLETED simulation ("I simulated...", "my simulation results")
+# is not a request to run one — the user wants analysis of what happened.
+SIM_REPORT_RE = re.compile(
+    r"\b(?:i|we)\s+(?:just\s+|already\s+|have\s+|had\s+)?simulat(?:ed|ion)\b|"
+    r"\bmy simulation\b|\bsimulation results?\b",
+    re.IGNORECASE,
+)
+HEBREW_SIM_REPORT_RE = re.compile(r"סימלצתי|הסימולציה שלי")
 HEBREW_SIMULATE_RE = re.compile(
     r"(דמה|סימולציה|סימלציה|בחן|בדיקת נתונים|איך המספרים שלי היו|איך היו המספרים שלי)",
     re.IGNORECASE,
@@ -82,8 +99,16 @@ HEBREW_SIMULATE_RE = re.compile(
 
 # ── Admin operation keyword regexes ──────────────────────────
 ADMIN_SAVE_RE = re.compile(
-    r"\b(save|keep|store).{0,50}(numbers?|form|combination)\b",
+    r"\b(save|keep|store)s?\b.{0,50}(numbers?|form|combination)\b",
     re.IGNORECASE,
+)
+LIST_SAVED_RE = re.compile(
+    r"\b(list|show|view|display|see)\b.{0,40}\b(saved|bookmarked)\b.{0,20}\bnumbers?\b|"
+    r"\bsaved numbers\b",
+    re.IGNORECASE,
+)
+HEBREW_LIST_SAVED_RE = re.compile(
+    r"(מספרים\s*שמורים|השמורים\s*שלי|שמורים\s*שלי|רשימת\s*מספרים|המספרים\s*של\s*הארנק)",
 )
 HEBREW_ADMIN_SAVE_RE = re.compile(
     r"(שמור|שמרי|תשמור|תשמרי|שמירת|שמירה).{0,50}(מספרים|טופס|צירוף)",
@@ -98,11 +123,12 @@ HEBREW_ADMIN_AUDIT_RE = re.compile(
     re.IGNORECASE,
 )
 ADMIN_CODE_RE = re.compile(
-    r"\b(read (?:code|file)|edit(?:\s+(?:file|code))?|list files|list db tables|query db|search web|scraper)\b",
+    r"\b(read (?:code|file)|edit(?:\s+(?:file|code))?|list files|list db tables|query db|"
+    r"search (?:the )?(?:web|internet|online)|scraper)\b",
     re.IGNORECASE,
 )
 HEBREW_ADMIN_CODE_RE = re.compile(
-    r"(קרא (?:קוד|קובץ)|ערוך(?:\s+(?:קובץ|קוד))?|רשימת קבצים|רשימת טבלאות|שאילתת db|חפש באינטרנט|סקרייפר)",
+    r"(קרא (?:קוד|קובץ)|ערוך(?:\s+(?:קובץ|קוד))?|רשימת קבצים|רשימת טבלאות|שאילתת db|חפש באינטרנט|חיפוש ברשת|סקרייפר)",
     re.IGNORECASE,
 )
 
@@ -336,7 +362,14 @@ def _extract_how_many(message: str, lang: str) -> Optional[int]:
     if m:
         return int(m.group(1))
     if lang == "he":
-        m = re.search(r"\b(\d+)\s+(ראשונים|ראשונות|ראשון|ראשונה)", message)
+        # "3 הראשונים" / "ה-3 הראשונים"
+        m = HEBREW_HOW_MANY_RE.search(message)
+        if m:
+            return int(re.search(r"\d+", m.group(0)).group(0))
+        # "3 טפסים" / "צור 3" — count adjacent to a form noun or generate verb
+        m = re.search(r"(\d+)\s*(?:טופס|טפסים|צירוף|צירופים|שילוב|שילובים)", message)
+        if not m:
+            m = re.search(r"(?:צור|צרי|תיצור|תייצר|תיצרי|תייצרי|הגרל|תגריל|יגריל)\s*(\d+)", message)
         if m:
             return int(m.group(1))
     return None
@@ -376,11 +409,11 @@ def _classify_request_kind(message: str, lang: str) -> tuple[str, Optional[str]]
     if CAPABILITIES_RE.search(message) or HEBREW_CAPABILITIES_RE.search(message):
         return "trivial", "capabilities"
 
-    # 2. Out of scope (deterministic)
-    if OUT_OF_SCOPE_RE.search(message) or HEBREW_OUT_OF_SCOPE_RE.search(message):
-        return "out_of_scope", None
-
-    # 3. Admin operations
+    # 2. Admin operations — checked BEFORE out-of-scope so admin phrases
+    # containing generic keywords win (e.g. "search the web for ... news"
+    # must reach search_web, not be rejected because of "news").
+    if LIST_SAVED_RE.search(message) or HEBREW_LIST_SAVED_RE.search(message):
+        return "admin_operation", None
     if ADMIN_SAVE_RE.search(message) or HEBREW_ADMIN_SAVE_RE.search(message):
         return "admin_operation", None
     if ADMIN_AUDIT_RE.search(message) or HEBREW_ADMIN_AUDIT_RE.search(message):
@@ -388,12 +421,21 @@ def _classify_request_kind(message: str, lang: str) -> tuple[str, Optional[str]]
     if ADMIN_CODE_RE.search(message) or HEBREW_ADMIN_CODE_RE.search(message):
         return "admin_operation", None
 
+    # 3. Out of scope (deterministic)
+    if OUT_OF_SCOPE_RE.search(message) or HEBREW_OUT_OF_SCOPE_RE.search(message):
+        return "out_of_scope", None
+
     # 4. Form generation
     if FORM_GENERATION_RE.search(message) or HEBREW_FORM_GENERATION_RE.search(message):
+        return "form_generation", None
+    if BARE_GENERATE_RE.search(message) or HEBREW_BARE_GENERATE_RE.search(message):
         return "form_generation", None
 
     # 5. Simulation / backtest
     if SIMULATE_RE.search(message) or HEBREW_SIMULATE_RE.search(message):
+        # Past-tense reporting of a finished simulation is analysis, not a request.
+        if SIM_REPORT_RE.search(message) or HEBREW_SIM_REPORT_RE.search(message):
+            return "ambiguous", None
         return "simulation", None
 
     # 6. Number analysis
@@ -440,6 +482,8 @@ def _resolve_admin_operation(message: str, lang: str, file_path: Optional[str] =
         lang: detected language.
         file_path: extracted file path, if any.
     """
+    if LIST_SAVED_RE.search(message) or HEBREW_LIST_SAVED_RE.search(message):
+        return "list_saved_numbers"
     if ADMIN_SAVE_RE.search(message) or HEBREW_ADMIN_SAVE_RE.search(message):
         return "save_numbers"
     if re.search(r"\b(audit log|audit)\b", message, re.IGNORECASE) or \
@@ -451,7 +495,7 @@ def _resolve_admin_operation(message: str, lang: str, file_path: Optional[str] =
     if re.search(r"\b(scraper)\b", message, re.IGNORECASE) or \
        re.search(r"(סקרייפר|סרוק|לסרוק)", message, re.IGNORECASE):
         return "trigger_scraper"
-    if re.search(r"\b(search web)\b", message, re.IGNORECASE) or \
+    if re.search(r"\bsearch (?:the )?(?:web|internet|online)\b", message, re.IGNORECASE) or \
        re.search(r"(חפש באינטרנט|חיפוש ברשת)", message, re.IGNORECASE):
         return "search_web"
     if re.search(r"\bread (?:code|file)\b", message, re.IGNORECASE) or \

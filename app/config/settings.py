@@ -18,6 +18,8 @@ from pydantic_settings import BaseSettings
 class OllamaConfig:
     base_url: str = "http://ollama:11434"
     model: str = "llama3.1:8b"
+    # Trusted local models — pulled on startup when missing from local Ollama.
+    models: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -79,6 +81,10 @@ class SecurityConfig:
     jwks_url: str = ""
     issuer: str = ""
     audience: str = ""
+    # Trusted `iss` claim values. Empty = issuer not checked (signature +
+    # audience still verified). Needed because Keycloak's public URL varies
+    # by deployment (localhost / ngrok tunnel / prod domain).
+    allowed_issuers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -132,6 +138,9 @@ def _env_override(data: dict) -> dict:
         data.setdefault("llm", {}).setdefault("ollama", {})["base_url"] = v
     if v := os.environ.get("OLLAMA_MODEL"):
         data.setdefault("llm", {}).setdefault("ollama", {})["model"] = v
+    if v := os.environ.get("OLLAMA_MODELS"):
+        data.setdefault("llm", {}).setdefault("ollama", {})["models"] = [
+            s.strip() for s in v.split(",") if s.strip()]
     if v := os.environ.get("GEMINI_API_KEY"):
         data.setdefault("llm", {}).setdefault("gemini", {})["api_key"] = v
     if v := os.environ.get("GEMINI_MODEL"):
@@ -160,6 +169,8 @@ def _env_override(data: dict) -> dict:
         data.setdefault("security", {})["issuer"] = v
     if v := os.environ.get("AUDIENCE"):
         data.setdefault("security", {})["audience"] = v
+    if v := os.environ.get("ALLOWED_ISSUERS"):
+        data.setdefault("security", {})["allowed_issuers"] = [s.strip() for s in v.split(",") if s.strip()]
     # Logging
     if v := os.environ.get("AGENT_LOG_LEVEL"):
         data.setdefault("logging", {})["level"] = v
@@ -176,6 +187,7 @@ def _build_settings(data: dict) -> Settings:
         ollama=OllamaConfig(
             base_url=llm_data.get("ollama", {}).get("base_url", "http://ollama:11434"),
             model=llm_data.get("ollama", {}).get("model", "llama3.1:8b"),
+            models=list(llm_data.get("ollama", {}).get("models", [])),
         ),
         gemini=GeminiConfig(
             api_key=llm_data.get("gemini", {}).get("api_key", ""),
@@ -220,11 +232,15 @@ def _build_settings(data: dict) -> Settings:
     database = DatabaseConfig(uri=db_data.get("uri", "postgresql://postgres:postgres@db:5432/statistiloto"))
 
     sec_data = data.get("security", {})
+    _issuers = sec_data.get("allowed_issuers", [])
+    if isinstance(_issuers, str):
+        _issuers = [s.strip() for s in _issuers.split(",") if s.strip()]
     security = SecurityConfig(
         jwt_verify=sec_data.get("jwt_verify", True),
         jwks_url=sec_data.get("jwks_url", ""),
         issuer=sec_data.get("issuer", ""),
         audience=sec_data.get("audience", ""),
+        allowed_issuers=list(_issuers),
     )
 
     log_data = data.get("logging", {})

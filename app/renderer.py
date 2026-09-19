@@ -269,10 +269,58 @@ def render_structured_result(tool: str, result: dict, language: str = "en") -> s
             result.get("summary"),
             language,
         )
+    if tool == "search_web":
+        return render_search_results(result.get("results", []), language)
+    if tool == "list_saved_numbers":
+        items = result if isinstance(result, list) else result.get("numbers", result.get("items", []))
+        return render_saved_numbers_result(items, language)
     # Generic: avoid raw JSON, return a concise summary.
     if language == "he":
         return "הפעולה הושלמה. התוצאה זמינה במערכת."
     return "The action completed successfully. The result is available in the system."
+
+
+def render_saved_numbers_result(items: list, language: str = "en") -> str:
+    """Render the user's saved number sets (zero LLM)."""
+    if not items:
+        if language == "he":
+            return "אין מספרים שמורים בארנק שלך עדיין."
+        return "No saved numbers in your wallet yet."
+    if language == "he":
+        lines = [f"המספרים השמורים שלך ({len(items)}):"]
+    else:
+        lines = [f"Your saved numbers ({len(items)}):"]
+    for i, item in enumerate(items[:20], 1):
+        nums = " + ".join(str(n) for n in (item.get("numbers") or []))
+        cat = item.get("category")
+        line = f"{i}. {nums}"
+        if cat and cat != "default":
+            line += f" ({cat})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def render_search_results(results: list, language: str = "en") -> str:
+    """Render web search results as a readable numbered list (zero LLM)."""
+    if not results:
+        if language == "he":
+            return "לא נמצאו תוצאות חיפוש."
+        return "No search results found."
+    if language == "he":
+        lines = [f"נמצאו {len(results)} תוצאות חיפוש:"]
+    else:
+        lines = [f"Found {len(results)} search results:"]
+    for i, r in enumerate(results[:10], 1):
+        title = r.get("title") or r.get("url", "")
+        url = r.get("url", "")
+        snippet = (r.get("snippet") or "").strip()
+        line = f"{i}. {title}"
+        if url:
+            line += f" — {url}"
+        lines.append(line)
+        if snippet:
+            lines.append(f"   {snippet}")
+    return "\n".join(lines)
 
 
 def render_simulate_result(draws: list, summary: dict | None, language: str = "en") -> str:

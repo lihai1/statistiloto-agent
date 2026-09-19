@@ -105,6 +105,12 @@ def validate_jwt(authorization_header: str) -> TokenClaims:
                 audience=settings.security.audience or None,
                 options={"verify_iss": False},
             )
+            # Issuer varies by deployment (localhost / ngrok / prod domain),
+            # so strict iss verification is off — but when ALLOWED_ISSUERS is
+            # configured, the token's iss must be one of the trusted values.
+            allowed = settings.security.allowed_issuers
+            if allowed and claims.get("iss") not in allowed:
+                raise JWTError(f"Untrusted issuer: {claims.get('iss')}")
         except jwt.PyJWTError as e:
             raise JWTError(f"Invalid token: {e}") from e
 

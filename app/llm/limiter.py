@@ -1,14 +1,12 @@
-"""LLM call serializer — process-wide lock so only one LLM inference runs at a time.
+"""LLM call serializer — per-provider lock so constrained backends run one
+inference at a time.
 
 Ollama is constrained to ``OLLAMA_NUM_PARALLEL=1`` (one in-flight inference per
-model). When two users call the chat agent concurrently, both ``graph.invoke()``
-runs hit Ollama simultaneously; the second request can fail or time out
-non-gracefully. This module centralizes serialization so all worker subgraphs
-share a single queue — the second call waits for the first to complete, then
-proceeds naturally.
-
-The lock is ``threading.Lock`` because ``graph.invoke()`` runs synchronously in
-``asyncio.to_thread`` — each graph execution occupies a separate thread.
+model). When two users call the chat agent concurrently, both graph runs hit
+Ollama simultaneously; the second request can fail or time out non-gracefully.
+This module serializes calls — but ONLY for providers that need it. Cloud
+providers (gemini/openai/anthropic/mock) handle their own concurrency, so
+they bypass the lock entirely instead of queueing behind a local inference.
 """
 
 from __future__ import annotations
@@ -19,26 +17,50 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Process-wide lock — single in-flight LLM inference across all threads.
+# Lock — single in-flight LLM inference, only acquired for constrained providers.
 _llm_lock = threading.Lock()
+
+# Providers constrained to one in-flight inference. "mock" is the test
+# provider — serializing it keeps the concurrency invariant verifiable.
+_SERIALIZED_PROVIDERS = {"ollama", "mock"}
+
+
+def _needs_serialization() -> bool:
+    """True when the active provider requires single-inference serialization."""
+    try:
+        from app.llm.config_store import get_llm_store
+        return get_llm_store().get_config().provider in _SERIALIZED_PROVIDERS
+    except Exception:
+        return True  # fail safe: serialize when the store is unavailable
 
 
 def llm_invoke(llm: Any, prompt: Any, **kwargs: Any) -> Any:
-    """Call ``llm.invoke(prompt)`` under the global LLM lock.
+    """Call ``llm.invoke(prompt)`` under the provider lock when needed.
 
-    Acquires the process-wide lock so only one LLM inference runs at a time.
-    The caller's thread blocks until the lock is released by the prior call,
-    then proceeds. This makes Ollama's single-inference constraint transparent
-    to concurrent users — the second user simply waits for the first to finish.
-
-    Args:
-        llm: the LLM instance (or tool-bound variant) to invoke.
-        prompt: the prompt to pass to ``llm.invoke()``.
-        **kwargs: additional keyword arguments forwarded to ``invoke()``.
-
-    Returns:
-        The raw LLM response (e.g. ``AIMessage``).
+    Ollama calls serialize so only one inference runs at a time; other
+    providers run concurrently. Additional kwargs forward to ``invoke()``.
     """
-    with _llm_lock:
-        log.debug("[llm-limiter] ACQUIRED — calling llm.invoke()")
-        return llm.invoke(prompt, **kwargs)
+    if _needs_serialization():
+        with _llm_lock:
+            log.debug("[llm-limiter] ACQUIRED — calling llm.invoke()")
+            return llm.invoke(prompt, **kwargs)
+    return llm.invoke(prompt, **kwargs)
+
+
+def llm_stream_invoke(llm: Any, prompt: Any, **kwargs: Any) -> Any:
+    """Stream ``llm.stream(prompt)`` and accumulate chunks into one message.
+
+    Uses ``.stream()`` so LangGraph's ``stream_mode="messages"`` emits real
+    token chunks to stream consumers, then folds the chunks back into a
+    single accumulated message (same ``.content`` / ``usage_metadata`` shape
+    as an invoke result) for the node's normal handling.
+    """
+    acc = None
+    if _needs_serialization():
+        with _llm_lock:
+            for chunk in llm.stream(prompt, **kwargs):
+                acc = chunk if acc is None else acc + chunk
+    else:
+        for chunk in llm.stream(prompt, **kwargs):
+            acc = chunk if acc is None else acc + chunk
+    return acc
